@@ -262,6 +262,9 @@ function doPost(e) {
     if (action === 'createProject') {
       requireWrite_(user);
       values.id = values.id || Utilities.getUuid();
+      // §6.1 step 4 — Media Plan Status defaults to Pre-Planning; Deal
+      // Status stays unset until the deal actually resolves (§6.2 step 5).
+      values.mediaPlanStatus = values.mediaPlanStatus || 'Pre-Planning';
       values.createdAt = now;
       values.createdBy = user.email;
       values.updatedAt = now;
