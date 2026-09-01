@@ -1,25 +1,33 @@
-// Sandbox skeleton for the real Project/Version/User schema (§5 of
-// End-to-End-System-Plan.md). Intentionally basic CRUD only — lookup-table
-// derivation (pitchTeam/holdCo), Drive folder auto-creation, and the
-// Projects/Plans Log derived views come in later phases (§9, weeks 3-8).
-// Read/write client pattern (JSONP reads, iframe-POST-then-verify writes)
-// is already proven against the closed_deals pilot; this reuses it.
+// Sandbox for the real Project/Version/User schema (§5 of
+// End-to-End-System-Plan.md). Read/write client pattern (JSONP reads,
+// iframe-POST-then-verify writes) is already proven against the
+// closed_deals pilot; this reuses it.
+//
+// Still not built: Projects/Plans Log derived views (weeks 6-8).
+
+const PARENT_FOLDER_ID = '1tCaf4LoB1qcARLK2faKN2yYTxXMW96lh'; // "Media Planner Projects"
 
 const SHEET_NAMES = {
   users: 'Users',
   projects: 'Projects',
   versions: 'Versions',
+  teamRoster: 'TeamRoster',
+  agencyHoldCo: 'AgencyHoldCo',
+  tentpoleShows: 'TentpoleShows',
 };
 
 const USER_FIELDS = ['email', 'name', 'role'];
 
+// pitchLeadName isn't in the original ER diagram but is required input to
+// derive pitchTeam (§5.1) — the current real Assignment sheet has an
+// equivalent "Pitch Lead" column feeding the same Maps-tab lookup.
 const PROJECT_FIELDS = [
   'id', 'projectName', 'account', 'brand', 'agency', 'holdCo',
   'leadMediaPlannerEmail', 'leadSellerEmail', 'marketingProjectLead',
   'sponsorshipStrategyLead', 'salesAccountManager', 'yieldContact',
-  'pitchTeam', 'rushRequest', 'mediaPlanStatus', 'dealStatus', 'dealCategory',
-  'tentpoleShowId', 'folderId', 'driveFolderLink', 'salesforceLink',
-  'scratchpadLink', 'budgetSheetLink', 'sponsorshipPlansLink',
+  'pitchLeadName', 'pitchTeam', 'rushRequest', 'mediaPlanStatus', 'dealStatus',
+  'dealCategory', 'tentpoleShowId', 'folderId', 'driveFolderLink',
+  'salesforceLink', 'scratchpadLink', 'budgetSheetLink', 'sponsorshipPlansLink',
   'planRequestDate', 'planDueDate', 'campaignStartDate', 'campaignEndDate',
   'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
 ];
@@ -30,17 +38,43 @@ const VERSION_FIELDS = [
   'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
 ];
 
+const TEAM_ROSTER_FIELDS = ['teamMemberName', 'pitchTeam'];
+const AGENCY_HOLDCO_FIELDS = ['agency', 'holdCo'];
+const TENTPOLE_SHOW_FIELDS = ['id', 'name'];
+
 // One-time setup — run manually from the Apps Script editor, not exposed via
-// doGet/doPost. Seeds the caller as a write user so there's an initial admin.
+// doGet/doPost. Seeds the caller as a write user and a couple of example
+// roster rows (from the real Assignment/Logging sheet's Maps tab, §5.1) so
+// the lookup derivation has something to resolve against immediately.
+// Run this once from the Apps Script editor's "Run" button — clasp's
+// headless deploy doesn't trigger the interactive OAuth consent dialog
+// needed to grant new scopes (Drive access), only the browser IDE does.
+function authorizeDriveAccess() {
+  const testValues = { account: 'Debug', brand: 'Debug', projectName: 'Debug (delete me)' };
+  createProjectFolder_(testValues);
+  Logger.log(testValues.driveFolderLink);
+}
+
 function setupSchema() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   ensureSheet_(ss, SHEET_NAMES.users, USER_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.projects, PROJECT_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.versions, VERSION_FIELDS);
+  const roster = ensureSheet_(ss, SHEET_NAMES.teamRoster, TEAM_ROSTER_FIELDS);
+  const agencyHoldCo = ensureSheet_(ss, SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS);
+  ensureSheet_(ss, SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS);
 
   const usersSheet = ss.getSheetByName(SHEET_NAMES.users);
   if (usersSheet.getLastRow() < 2) {
     usersSheet.appendRow([Session.getActiveUser().getEmail(), 'Admin', 'write']);
+  }
+  if (roster.getLastRow() < 2) {
+    roster.appendRow(['Nicole Rosenberg', 'ROSENBERG']);
+    roster.appendRow(['Bari Zibrak', 'ZIBRAK']);
+  }
+  if (agencyHoldCo.getLastRow() < 2) {
+    agencyHoldCo.appendRow(['Agency D7', 'PMX']);
+    agencyHoldCo.appendRow(['Carat', 'Dentsu']);
   }
 
   const sheet1 = ss.getSheetByName('Sheet1');
@@ -102,11 +136,28 @@ function requireWrite_(user) {
   }
 }
 
+// Column order comes from the sheet's actual header row, not the `fields`
+// array's order — appendRow/setValue are purely positional, so if PROJECT_FIELDS
+// (etc.) grows over time, writing by array order silently misaligns every
+// existing column after the insertion point. This adds any new fields as
+// extra columns at the end instead, so growing the schema never shifts
+// existing data (confirmed bug, fixed 2026-09-01).
+function ensureColumns_(sheet, fields) {
+  const lastCol = sheet.getLastColumn();
+  const headers = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+  const missing = fields.filter(function (f) { return headers.indexOf(f) === -1; });
+  if (missing.length > 0) {
+    sheet.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]);
+  }
+  return headers.concat(missing);
+}
+
 function appendRecord_(sheetName, fields, values) {
   const sheet = getSheet_(sheetName);
-  const row = fields.map(function (f) {
-    let v = values[f];
-    if (f === 'packages' && v && typeof v === 'object') v = JSON.stringify(v);
+  const headers = ensureColumns_(sheet, fields);
+  const row = headers.map(function (h) {
+    let v = values[h];
+    if (h === 'packages' && v && typeof v === 'object') v = JSON.stringify(v);
     return v === undefined || v === null ? '' : v;
   });
   sheet.appendRow(row);
@@ -114,22 +165,50 @@ function appendRecord_(sheetName, fields, values) {
 
 function updateRecord_(sheetName, fields, idField, id, values) {
   const sheet = getSheet_(sheetName);
+  const headers = ensureColumns_(sheet, fields);
   const data = sheet.getDataRange().getValues();
-  const headers = data[0];
   const idIdx = headers.indexOf(idField);
   for (let r = 1; r < data.length; r++) {
     if (data[r][idIdx] === id) {
-      fields.forEach(function (f, i) {
+      fields.forEach(function (f) {
         if (Object.prototype.hasOwnProperty.call(values, f)) {
           let v = values[f];
           if (f === 'packages' && v && typeof v === 'object') v = JSON.stringify(v);
-          sheet.getRange(r + 1, i + 1).setValue(v);
+          const colIdx = headers.indexOf(f);
+          sheet.getRange(r + 1, colIdx + 1).setValue(v);
         }
       });
       return true;
     }
   }
   return false;
+}
+
+// §5.1 — pitchTeam and holdCo are lookup-derived, never manually typed.
+function lookupValue_(sheetName, keyField, key, valueField) {
+  if (!key) return null;
+  const rows = readRows_(sheetName);
+  const match = rows.find(function (r) { return r[keyField] === key; });
+  return match ? match[valueField] : null;
+}
+
+function applyProjectLookups_(values) {
+  if (values.pitchLeadName) {
+    values.pitchTeam = lookupValue_(SHEET_NAMES.teamRoster, 'teamMemberName', values.pitchLeadName, 'pitchTeam');
+  }
+  if (values.agency) {
+    values.holdCo = lookupValue_(SHEET_NAMES.agencyHoldCo, 'agency', values.agency, 'holdCo');
+  }
+}
+
+// §5.2 — auto-creates a subfolder under the shared parent, named
+// "{Account} - {Brand} - {ProjectName}" (confirmed 2026-08-31).
+function createProjectFolder_(values) {
+  const name = [values.account, values.brand, values.projectName].filter(Boolean).join(' - ');
+  const parent = DriveApp.getFolderById(PARENT_FOLDER_ID);
+  const folder = parent.createFolder(name || 'Untitled Project');
+  values.folderId = folder.getId();
+  values.driveFolderLink = folder.getUrl();
 }
 
 function respond_(result, callback) {
@@ -150,6 +229,12 @@ function doGet(e) {
       result = readRows_(SHEET_NAMES.versions);
     } else if (action === 'listUsers') {
       result = readRows_(SHEET_NAMES.users);
+    } else if (action === 'listTeamRoster') {
+      result = readRows_(SHEET_NAMES.teamRoster);
+    } else if (action === 'listAgencyHoldCo') {
+      result = readRows_(SHEET_NAMES.agencyHoldCo);
+    } else if (action === 'listTentpoleShows') {
+      result = readRows_(SHEET_NAMES.tentpoleShows);
     } else if (action === 'whoami') {
       result = getCurrentUser_();
     } else {
@@ -181,11 +266,14 @@ function doPost(e) {
       values.createdBy = user.email;
       values.updatedAt = now;
       values.updatedBy = user.email;
+      applyProjectLookups_(values);
+      createProjectFolder_(values);
       appendRecord_(SHEET_NAMES.projects, PROJECT_FIELDS, values);
     } else if (action === 'updateProject') {
       requireWrite_(user);
       values.updatedAt = now;
       values.updatedBy = user.email;
+      applyProjectLookups_(values);
       updateRecord_(SHEET_NAMES.projects, PROJECT_FIELDS, 'id', values.id, values);
     } else if (action === 'createVersion') {
       requireWrite_(user);
@@ -200,6 +288,16 @@ function doPost(e) {
       values.updatedAt = now;
       values.updatedBy = user.email;
       updateRecord_(SHEET_NAMES.versions, VERSION_FIELDS, 'id', values.id, values);
+    } else if (action === 'createTeamRosterEntry') {
+      requireWrite_(user);
+      appendRecord_(SHEET_NAMES.teamRoster, TEAM_ROSTER_FIELDS, values);
+    } else if (action === 'createAgencyHoldCoEntry') {
+      requireWrite_(user);
+      appendRecord_(SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS, values);
+    } else if (action === 'createTentpoleShow') {
+      requireWrite_(user);
+      values.id = values.id || Utilities.getUuid();
+      appendRecord_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, values);
     }
   } finally {
     lock.releaseLock();
