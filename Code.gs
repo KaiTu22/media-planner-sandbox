@@ -223,6 +223,26 @@ function createProjectFolder_(values) {
   values.driveFolderLink = folder.getUrl();
 }
 
+// Automatically keeps one continuously-updated INTERNAL_*.json file in the
+// project's Drive folder — replaces the old manual "Export Internal Plan"
+// download-then-drag-into-Drive workflow (confirmed 2026-09-04). Overwrites
+// the existing file by name rather than creating a new dated one each time,
+// since this now fires automatically on every debounced sync, not on a
+// deliberate user click.
+function uploadProjectFile_(projectId, content) {
+  const project = readRows_(SHEET_NAMES.projects).find(function (p) { return p.id === projectId; });
+  if (!project || !project.folderId) return; // no Drive folder yet (e.g. legacy/imported project) — skip
+  const sanitizedName = (project.projectName || 'untitled').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  const filename = 'INTERNAL_' + sanitizedName + '.json';
+  const folder = DriveApp.getFolderById(project.folderId);
+  const existing = folder.getFilesByName(filename);
+  if (existing.hasNext()) {
+    existing.next().setContent(content);
+  } else {
+    folder.createFile(filename, content, MimeType.PLAIN_TEXT);
+  }
+}
+
 // §6.1 step 5 — notifies the assigned Lead Media Planner plus anyone else
 // picked on the Assignment form. Email works today via MailApp (no external
 // service, generous Workspace quota). Slack posts to one pre-existing
@@ -346,7 +366,11 @@ function doPost(e) {
   const values = e.parameter.payload ? JSON.parse(e.parameter.payload) : {};
   const now = new Date().toISOString();
 
-  if (action === 'createProject') {
+  if (action === 'uploadProjectFile') {
+    requireWrite_(user);
+    uploadProjectFile_(e.parameter.projectId, e.parameter.content);
+    return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
+  } else if (action === 'createProject') {
     requireWrite_(user);
     values.id = values.id || Utilities.getUuid();
     // §6.1 step 4 — Media Plan Status defaults to Pre-Planning; Deal
