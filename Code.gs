@@ -223,6 +223,35 @@ function createProjectFolder_(values) {
   values.driveFolderLink = folder.getUrl();
 }
 
+// General-purpose file upload (confirmed 2026-09-04) — lets a planner
+// attach any supporting document (signed IO, client PDF, screenshot, etc.)
+// to a project's Drive folder from inside the app, instead of clicking
+// through to Drive and finding the folder themselves. Content arrives
+// base64-encoded (safe for a form POST body, unlike raw binary).
+function uploadProjectAttachment_(projectId, filename, mimeType, contentBase64) {
+  const project = readRows_(SHEET_NAMES.projects).find(function (p) { return p.id === projectId; });
+  if (!project || !project.folderId) {
+    throw new Error('Project has no Drive folder to upload to.');
+  }
+  const folder = DriveApp.getFolderById(project.folderId);
+  const blob = Utilities.newBlob(Utilities.base64Decode(contentBase64), mimeType || 'application/octet-stream', filename);
+  const file = folder.createFile(blob);
+  return { id: file.getId(), name: file.getName(), url: file.getUrl() };
+}
+
+function listProjectFiles_(projectId) {
+  const project = readRows_(SHEET_NAMES.projects).find(function (p) { return p.id === projectId; });
+  if (!project || !project.folderId) return [];
+  const folder = DriveApp.getFolderById(project.folderId);
+  const files = folder.getFiles();
+  const result = [];
+  while (files.hasNext()) {
+    const f = files.next();
+    result.push({ id: f.getId(), name: f.getName(), url: f.getUrl(), lastUpdated: f.getLastUpdated().toISOString() });
+  }
+  return result;
+}
+
 // Automatically keeps one continuously-updated INTERNAL_*.json file in the
 // project's Drive folder — replaces the old manual "Export Internal Plan"
 // download-then-drag-into-Drive workflow (confirmed 2026-09-04). Overwrites
@@ -313,7 +342,9 @@ function doGet(e) {
   const callback = e.parameter.callback;
   let result;
   try {
-    if (action === 'listProjects') {
+    if (action === 'listProjectFiles') {
+      result = listProjectFiles_(e.parameter.projectId);
+    } else if (action === 'listProjects') {
       result = readRows_(SHEET_NAMES.projects);
     } else if (action === 'listVersions') {
       result = readRows_(SHEET_NAMES.versions);
@@ -366,7 +397,11 @@ function doPost(e) {
   const values = e.parameter.payload ? JSON.parse(e.parameter.payload) : {};
   const now = new Date().toISOString();
 
-  if (action === 'uploadProjectFile') {
+  if (action === 'uploadProjectAttachment') {
+    requireWrite_(user);
+    uploadProjectAttachment_(e.parameter.projectId, e.parameter.filename, e.parameter.mimeType, e.parameter.contentBase64);
+    return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
+  } else if (action === 'uploadProjectFile') {
     requireWrite_(user);
     uploadProjectFile_(e.parameter.projectId, e.parameter.content);
     return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
