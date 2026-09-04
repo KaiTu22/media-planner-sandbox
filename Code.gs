@@ -14,6 +14,7 @@ const SHEET_NAMES = {
   teamRoster: 'TeamRoster',
   agencyHoldCo: 'AgencyHoldCo',
   tentpoleShows: 'TentpoleShows',
+  projectFolders: 'ProjectFolders',
 };
 
 // slackUserId is optional and manually entered (e.g. copied from a
@@ -35,6 +36,7 @@ const PROJECT_FIELDS = [
   'planRequestDate', 'planDueDate', 'campaignStartDate', 'campaignEndDate',
   'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
   'notifyEmails', // comma-separated emails, picked from the Users list on the Assignment form
+  'projectFolderId', // §6.6 shared Browse-tree organization — distinct from folderId/driveFolderLink (the auto-created Drive folder)
 ];
 
 const VERSION_FIELDS = [
@@ -46,6 +48,12 @@ const VERSION_FIELDS = [
 const TEAM_ROSTER_FIELDS = ['teamMemberName', 'pitchTeam'];
 const AGENCY_HOLDCO_FIELDS = ['agency', 'holdCo'];
 const TENTPOLE_SHOW_FIELDS = ['id', 'name'];
+
+// §6.6 — shared, backend-hosted folder tree for organizing projects in the
+// Browse view. This is the multi-user version of the legacy tool's local-only
+// `projectFolders` (localStorage, per-browser) — same shape (recursive via
+// parentId), but visible to everyone instead of just one person's browser.
+const PROJECT_FOLDER_FIELDS = ['id', 'name', 'parentId', 'createdAt', 'createdBy'];
 
 // One-time setup — run manually from the Apps Script editor, not exposed via
 // doGet/doPost. Seeds the caller as a write user and a couple of example
@@ -75,6 +83,7 @@ function setupSchema() {
   const roster = ensureSheet_(ss, SHEET_NAMES.teamRoster, TEAM_ROSTER_FIELDS);
   const agencyHoldCo = ensureSheet_(ss, SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS);
+  ensureSheet_(ss, SHEET_NAMES.projectFolders, PROJECT_FOLDER_FIELDS);
 
   const usersSheet = ss.getSheetByName(SHEET_NAMES.users);
   if (usersSheet.getLastRow() < 2) {
@@ -330,6 +339,43 @@ function sendSlackNotification_(subject, lines, emails) {
   });
 }
 
+// Recursively collects every descendant folder ID (children, grandchildren,
+// etc.) of the given folder — same logic as the legacy tool's
+// getDescendantFolderIds, now server-side so it works across users.
+function getDescendantFolderIds_(folderId, allFolders) {
+  const direct = allFolders.filter(function (f) { return f.parentId === folderId; }).map(function (f) { return f.id; });
+  let all = direct.slice();
+  direct.forEach(function (id) {
+    all = all.concat(getDescendantFolderIds_(id, allFolders));
+  });
+  return all;
+}
+
+// Deletes a folder and its whole subtree, reassigning any project inside
+// one of the deleted folders to Uncategorized (projectFolderId = null) —
+// mirrors the legacy tool's deleteProjectFolder behavior. Caller must hold
+// the script lock (see withLock_ in doPost) since this mutates two sheets.
+function deleteProjectFolder_(folderId) {
+  const allFolders = readRows_(SHEET_NAMES.projectFolders);
+  const idsToDelete = [folderId].concat(getDescendantFolderIds_(folderId, allFolders));
+
+  readRows_(SHEET_NAMES.projects).forEach(function (p) {
+    if (idsToDelete.indexOf(p.projectFolderId) !== -1) {
+      updateRecord_(SHEET_NAMES.projects, PROJECT_FIELDS, 'id', p.id, { id: p.id, projectFolderId: null });
+    }
+  });
+
+  const sheet = getSheet_(SHEET_NAMES.projectFolders);
+  const headers = ensureColumns_(sheet, PROJECT_FOLDER_FIELDS);
+  const idIdx = headers.indexOf('id');
+  const data = sheet.getDataRange().getValues();
+  for (let r = data.length - 1; r >= 1; r--) { // bottom-up so row indices don't shift mid-loop
+    if (idsToDelete.indexOf(data[r][idIdx]) !== -1) {
+      sheet.deleteRow(r + 1);
+    }
+  }
+}
+
 function respond_(result, callback) {
   const body = JSON.stringify(result);
   return callback
@@ -344,6 +390,8 @@ function doGet(e) {
   try {
     if (action === 'listProjectFiles') {
       result = listProjectFiles_(e.parameter.projectId);
+    } else if (action === 'listProjectFolders') {
+      result = readRows_(SHEET_NAMES.projectFolders);
     } else if (action === 'listProjects') {
       result = readRows_(SHEET_NAMES.projects);
     } else if (action === 'listVersions') {
@@ -397,7 +445,28 @@ function doPost(e) {
   const values = e.parameter.payload ? JSON.parse(e.parameter.payload) : {};
   const now = new Date().toISOString();
 
-  if (action === 'uploadProjectAttachment') {
+  if (action === 'createProjectFolder') {
+    requireWrite_(user);
+    values.id = values.id || Utilities.getUuid();
+    values.createdAt = now;
+    values.createdBy = user.email;
+    withLock_(function () {
+      appendRecord_(SHEET_NAMES.projectFolders, PROJECT_FOLDER_FIELDS, values);
+    });
+    return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
+  } else if (action === 'renameProjectFolder') {
+    requireWrite_(user);
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.projectFolders, PROJECT_FOLDER_FIELDS, 'id', values.id, values);
+    });
+    return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
+  } else if (action === 'deleteProjectFolder') {
+    requireWrite_(user);
+    withLock_(function () {
+      deleteProjectFolder_(values.id);
+    });
+    return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
+  } else if (action === 'uploadProjectAttachment') {
     requireWrite_(user);
     uploadProjectAttachment_(e.parameter.projectId, e.parameter.filename, e.parameter.mimeType, e.parameter.contentBase64);
     return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
