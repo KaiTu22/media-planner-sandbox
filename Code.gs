@@ -316,6 +316,26 @@ function doGet(e) {
   return respond_(result, callback);
 }
 
+// Holds the script lock only around the actual sheet mutation, not around
+// slow unrelated I/O (Drive folder creation, lookups, notifications).
+// Confirmed 2026-09-04 by a real concurrency test: holding the lock across
+// createProject's full body (including Drive folder creation) meant a
+// queue of concurrent writes serialized through that slow step too, and
+// 2 of 10 concurrent test writes timed out waiting for the lock and were
+// silently lost (waitLock() throws outside try/finally, and doPost's
+// response is unreadable anyway — see comment below). Narrowing the lock
+// to just the sheet write keeps hold time to milliseconds, so far more
+// concurrent writers can be served within the same timeout.
+function withLock_(fn) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // Response body is unreadable cross-origin (script.google.com sends
 // X-Frame-Options: sameorigin, blocking any iframe response including
 // postMessage — confirmed against the closed_deals pilot). Callers must
@@ -323,62 +343,71 @@ function doGet(e) {
 function doPost(e) {
   const action = e.parameter.action;
   const user = getCurrentUser_();
-  const lock = LockService.getScriptLock();
-  lock.waitLock(10000);
-  try {
-    const values = e.parameter.payload ? JSON.parse(e.parameter.payload) : {};
-    const now = new Date().toISOString();
+  const values = e.parameter.payload ? JSON.parse(e.parameter.payload) : {};
+  const now = new Date().toISOString();
 
-    if (action === 'createProject') {
-      requireWrite_(user);
-      values.id = values.id || Utilities.getUuid();
-      // §6.1 step 4 — Media Plan Status defaults to Pre-Planning; Deal
-      // Status stays unset until the deal actually resolves (§6.2 step 5).
-      values.mediaPlanStatus = values.mediaPlanStatus || 'Pre-Planning';
-      values.createdAt = now;
-      values.createdBy = user.email;
-      values.updatedAt = now;
-      values.updatedBy = user.email;
-      applyProjectLookups_(values);
-      createProjectFolder_(values);
+  if (action === 'createProject') {
+    requireWrite_(user);
+    values.id = values.id || Utilities.getUuid();
+    // §6.1 step 4 — Media Plan Status defaults to Pre-Planning; Deal
+    // Status stays unset until the deal actually resolves (§6.2 step 5).
+    values.mediaPlanStatus = values.mediaPlanStatus || 'Pre-Planning';
+    values.createdAt = now;
+    values.createdBy = user.email;
+    values.updatedAt = now;
+    values.updatedBy = user.email;
+    applyProjectLookups_(values); // reads TeamRoster/AgencyHoldCo — different sheets, no lock needed
+    createProjectFolder_(values); // Drive API call — slow, no shared-sheet state, no lock needed
+    withLock_(function () {
       appendRecord_(SHEET_NAMES.projects, PROJECT_FIELDS, values);
-      try {
-        sendAssignmentNotifications_(values);
-      } catch (e) {
-        Logger.log('Assignment notifications failed: ' + e.message);
-      }
-    } else if (action === 'updateProject') {
-      requireWrite_(user);
-      values.updatedAt = now;
-      values.updatedBy = user.email;
-      applyProjectLookups_(values);
-      updateRecord_(SHEET_NAMES.projects, PROJECT_FIELDS, 'id', values.id, values);
-    } else if (action === 'createVersion') {
-      requireWrite_(user);
-      values.id = values.id || Utilities.getUuid();
-      values.createdAt = now;
-      values.createdBy = user.email;
-      values.updatedAt = now;
-      values.updatedBy = user.email;
-      appendRecord_(SHEET_NAMES.versions, VERSION_FIELDS, values);
-    } else if (action === 'updateVersion') {
-      requireWrite_(user);
-      values.updatedAt = now;
-      values.updatedBy = user.email;
-      updateRecord_(SHEET_NAMES.versions, VERSION_FIELDS, 'id', values.id, values);
-    } else if (action === 'createTeamRosterEntry') {
-      requireWrite_(user);
-      appendRecord_(SHEET_NAMES.teamRoster, TEAM_ROSTER_FIELDS, values);
-    } else if (action === 'createAgencyHoldCoEntry') {
-      requireWrite_(user);
-      appendRecord_(SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS, values);
-    } else if (action === 'createTentpoleShow') {
-      requireWrite_(user);
-      values.id = values.id || Utilities.getUuid();
-      appendRecord_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, values);
+    });
+    try {
+      sendAssignmentNotifications_(values);
+    } catch (e) {
+      Logger.log('Assignment notifications failed: ' + e.message);
     }
-  } finally {
-    lock.releaseLock();
+  } else if (action === 'updateProject') {
+    requireWrite_(user);
+    values.updatedAt = now;
+    values.updatedBy = user.email;
+    applyProjectLookups_(values);
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.projects, PROJECT_FIELDS, 'id', values.id, values);
+    });
+  } else if (action === 'createVersion') {
+    requireWrite_(user);
+    values.id = values.id || Utilities.getUuid();
+    values.createdAt = now;
+    values.createdBy = user.email;
+    values.updatedAt = now;
+    values.updatedBy = user.email;
+    withLock_(function () {
+      appendRecord_(SHEET_NAMES.versions, VERSION_FIELDS, values);
+    });
+  } else if (action === 'updateVersion') {
+    requireWrite_(user);
+    values.updatedAt = now;
+    values.updatedBy = user.email;
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.versions, VERSION_FIELDS, 'id', values.id, values);
+    });
+  } else if (action === 'createTeamRosterEntry') {
+    requireWrite_(user);
+    withLock_(function () {
+      appendRecord_(SHEET_NAMES.teamRoster, TEAM_ROSTER_FIELDS, values);
+    });
+  } else if (action === 'createAgencyHoldCoEntry') {
+    requireWrite_(user);
+    withLock_(function () {
+      appendRecord_(SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS, values);
+    });
+  } else if (action === 'createTentpoleShow') {
+    requireWrite_(user);
+    values.id = values.id || Utilities.getUuid();
+    withLock_(function () {
+      appendRecord_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, values);
+    });
   }
+
   return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
 }
