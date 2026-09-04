@@ -16,7 +16,11 @@ const SHEET_NAMES = {
   tentpoleShows: 'TentpoleShows',
 };
 
-const USER_FIELDS = ['email', 'name', 'role'];
+// slackUserId is optional and manually entered (e.g. copied from a
+// teammate's Slack profile "Copy member ID") — not resolved via any Slack
+// API. Without it, that person's name appears as plain text in Slack
+// notifications rather than a real, notifying mention.
+const USER_FIELDS = ['email', 'name', 'role', 'slackUserId'];
 
 // pitchLeadName isn't in the original ER diagram but is required input to
 // derive pitchTeam (§5.1) — the current real Assignment sheet has an
@@ -30,6 +34,7 @@ const PROJECT_FIELDS = [
   'salesforceLink', 'scratchpadLink', 'budgetSheetLink', 'sponsorshipPlansLink',
   'planRequestDate', 'planDueDate', 'campaignStartDate', 'campaignEndDate',
   'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
+  'notifyEmails', // comma-separated emails, picked from the Users list on the Assignment form
 ];
 
 const VERSION_FIELDS = [
@@ -55,6 +60,13 @@ function authorizeDriveAccess() {
   Logger.log(testValues.driveFolderLink);
 }
 
+// Same reasoning as authorizeDriveAccess — run once from the editor's "Run"
+// button after adding MailApp/UrlFetchApp usage, to grant the new scopes.
+function authorizeMailAndFetchAccess() {
+  MailApp.sendEmail({ to: Session.getActiveUser().getEmail(), subject: 'Media Planner sandbox — authorization test', body: 'If you got this, MailApp is authorized.' });
+  Logger.log('Mail sent to ' + Session.getActiveUser().getEmail());
+}
+
 function setupSchema() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   ensureSheet_(ss, SHEET_NAMES.users, USER_FIELDS);
@@ -66,7 +78,7 @@ function setupSchema() {
 
   const usersSheet = ss.getSheetByName(SHEET_NAMES.users);
   if (usersSheet.getLastRow() < 2) {
-    usersSheet.appendRow([Session.getActiveUser().getEmail(), 'Admin', 'write']);
+    usersSheet.appendRow([Session.getActiveUser().getEmail(), 'Admin', 'write', '']);
   }
   if (roster.getLastRow() < 2) {
     roster.appendRow(['Nicole Rosenberg', 'ROSENBERG']);
@@ -211,6 +223,64 @@ function createProjectFolder_(values) {
   values.driveFolderLink = folder.getUrl();
 }
 
+// §6.1 step 5 — notifies the assigned Lead Media Planner plus anyone else
+// picked on the Assignment form. Email works today via MailApp (no external
+// service, generous Workspace quota). Slack posts to one pre-existing
+// channel via an Incoming Webhook (Script Property SLACK_WEBHOOK_URL) — set
+// that property in the Apps Script editor's Project Settings once a webhook
+// exists; until then this just logs and skips, same as a missing recipient.
+// Never blocks project creation — both paths are wrapped by the caller.
+function sendAssignmentNotifications_(project) {
+  const emails = [project.leadMediaPlannerEmail]
+    .concat((project.notifyEmails || '').split(','))
+    .map(function (e) { return (e || '').trim(); })
+    .filter(Boolean);
+  if (emails.length === 0) return;
+
+  const dedupedEmails = Array.from(new Set(emails));
+  const subject = 'New Assignment: ' + (project.projectName || 'Untitled Project');
+  const lines = [
+    'Account / Brand: ' + [project.account, project.brand].filter(Boolean).join(' / '),
+    project.agency ? 'Agency: ' + project.agency : null,
+    project.planDueDate ? 'Plan Due: ' + project.planDueDate : null,
+    project.rushRequest ? 'RUSH REQUEST' : null,
+    project.driveFolderLink ? 'Drive folder: ' + project.driveFolderLink : null,
+  ].filter(Boolean);
+  const body = lines.join('\n');
+
+  try {
+    MailApp.sendEmail({ to: dedupedEmails.join(','), subject: subject, body: body });
+  } catch (e) {
+    Logger.log('Email notification failed: ' + e.message);
+  }
+
+  try {
+    sendSlackNotification_(subject, lines, dedupedEmails);
+  } catch (e) {
+    Logger.log('Slack notification failed: ' + e.message);
+  }
+}
+
+function sendSlackNotification_(subject, lines, emails) {
+  const webhookUrl = PropertiesService.getScriptProperties().getProperty('SLACK_WEBHOOK_URL');
+  if (!webhookUrl) {
+    Logger.log('Slack not configured (no SLACK_WEBHOOK_URL script property) — skipping.');
+    return;
+  }
+  const users = readRows_(SHEET_NAMES.users);
+  const mentions = emails.map(function (email) {
+    const user = users.find(function (u) { return u.email === email; });
+    if (user && user.slackUserId) return '<@' + user.slackUserId + '>';
+    return (user && user.name) || email;
+  });
+  const text = '*' + subject + '*\n' + lines.join('\n') + '\nNotifying: ' + mentions.join(', ');
+  UrlFetchApp.fetch(webhookUrl, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify({ text: text }),
+  });
+}
+
 function respond_(result, callback) {
   const body = JSON.stringify(result);
   return callback
@@ -272,6 +342,11 @@ function doPost(e) {
       applyProjectLookups_(values);
       createProjectFolder_(values);
       appendRecord_(SHEET_NAMES.projects, PROJECT_FIELDS, values);
+      try {
+        sendAssignmentNotifications_(values);
+      } catch (e) {
+        Logger.log('Assignment notifications failed: ' + e.message);
+      }
     } else if (action === 'updateProject') {
       requireWrite_(user);
       values.updatedAt = now;
