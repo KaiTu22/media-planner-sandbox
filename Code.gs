@@ -14,7 +14,7 @@ const SHEET_NAMES = {
   teamRoster: 'TeamRoster',
   agencyHoldCo: 'AgencyHoldCo',
   tentpoleShows: 'TentpoleShows',
-  projectFolders: 'ProjectFolders',
+  tags: 'Tags',
 };
 
 // slackUserId is optional and manually entered (e.g. copied from a
@@ -36,7 +36,7 @@ const PROJECT_FIELDS = [
   'planRequestDate', 'planDueDate', 'campaignStartDate', 'campaignEndDate',
   'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
   'notifyEmails', // comma-separated emails, picked from the Users list on the Assignment form
-  'projectFolderId', // §6.6 shared Browse-tree organization — distinct from folderId/driveFolderLink (the auto-created Drive folder)
+  'tags', // comma-separated tag names, picked from the managed Tags list (§6.3, confirmed 2026-09-08)
 ];
 
 const VERSION_FIELDS = [
@@ -49,11 +49,21 @@ const TEAM_ROSTER_FIELDS = ['teamMemberName', 'pitchTeam'];
 const AGENCY_HOLDCO_FIELDS = ['agency', 'holdCo'];
 const TENTPOLE_SHOW_FIELDS = ['id', 'name'];
 
-// §6.6 — shared, backend-hosted folder tree for organizing projects in the
-// Browse view. This is the multi-user version of the legacy tool's local-only
-// `projectFolders` (localStorage, per-browser) — same shape (recursive via
-// parentId), but visible to everyone instead of just one person's browser.
-const PROJECT_FOLDER_FIELDS = ['id', 'name', 'parentId', 'createdAt', 'createdBy'];
+// §6.3 — managed tag vocabulary, confirmed 2026-09-08. Deliberately not
+// free-form: assigning a tag to a project picks from this list; adding a
+// new tag to the list is its own separate, deliberate action (mirrors the
+// TentpoleShow "add new" pattern) rather than letting anyone type an
+// arbitrary string inline, to avoid duplicate/inconsistent variants
+// ("Priority" vs "priority" vs "High Priority").
+//
+// Replaces the shared ProjectFolders tree (§6.6, built earlier the same
+// day) — removed after concluding a single-parent folder hierarchy was the
+// wrong fit: real groupings overlap (a project can be "Q1" AND "Tentpole"
+// AND "Priority" at once), which tags support and folders structurally
+// can't. Browse (the separate tree+list page) is retired; this lives in
+// the Assignment Log instead, consolidating "find/organize a project" into
+// one page instead of two overlapping ones.
+const TAG_FIELDS = ['id', 'name', 'createdAt', 'createdBy'];
 
 // One-time setup — run manually from the Apps Script editor, not exposed via
 // doGet/doPost. Seeds the caller as a write user and a couple of example
@@ -83,7 +93,7 @@ function setupSchema() {
   const roster = ensureSheet_(ss, SHEET_NAMES.teamRoster, TEAM_ROSTER_FIELDS);
   const agencyHoldCo = ensureSheet_(ss, SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS);
-  ensureSheet_(ss, SHEET_NAMES.projectFolders, PROJECT_FOLDER_FIELDS);
+  ensureSheet_(ss, SHEET_NAMES.tags, TAG_FIELDS);
 
   const usersSheet = ss.getSheetByName(SHEET_NAMES.users);
   if (usersSheet.getLastRow() < 2) {
@@ -339,39 +349,44 @@ function sendSlackNotification_(subject, lines, emails) {
   });
 }
 
-// Recursively collects every descendant folder ID (children, grandchildren,
-// etc.) of the given folder — same logic as the legacy tool's
-// getDescendantFolderIds, now server-side so it works across users.
-function getDescendantFolderIds_(folderId, allFolders) {
-  const direct = allFolders.filter(function (f) { return f.parentId === folderId; }).map(function (f) { return f.id; });
-  let all = direct.slice();
-  direct.forEach(function (id) {
-    all = all.concat(getDescendantFolderIds_(id, allFolders));
-  });
-  return all;
+// Rejects a duplicate name (case-insensitive) rather than silently creating
+// a near-identical variant ("Priority" vs "priority") — the whole point of
+// a managed vocabulary over free-form tagging is avoiding this.
+function createTag_(values) {
+  const existing = readRows_(SHEET_NAMES.tags);
+  const name = (values.name || '').trim();
+  if (!name) throw new Error('Tag name is required.');
+  if (existing.some(function (t) { return (t.name || '').toLowerCase() === name.toLowerCase(); })) {
+    throw new Error('A tag named "' + name + '" already exists.');
+  }
+  appendRecord_(SHEET_NAMES.tags, TAG_FIELDS, { id: values.id, name: name, createdAt: values.createdAt, createdBy: values.createdBy });
 }
 
-// Deletes a folder and its whole subtree, reassigning any project inside
-// one of the deleted folders to Uncategorized (projectFolderId = null) —
-// mirrors the legacy tool's deleteProjectFolder behavior. Caller must hold
-// the script lock (see withLock_ in doPost) since this mutates two sheets.
-function deleteProjectFolder_(folderId) {
-  const allFolders = readRows_(SHEET_NAMES.projectFolders);
-  const idsToDelete = [folderId].concat(getDescendantFolderIds_(folderId, allFolders));
+// Removes a tag from the managed list and strips it from every project
+// that had it assigned, so nothing is left pointing at a name that no
+// longer exists in the vocabulary. Caller must hold the script lock (see
+// withLock_ in doPost) since this mutates two sheets.
+function deleteTag_(tagId) {
+  const tags = readRows_(SHEET_NAMES.tags);
+  const tag = tags.find(function (t) { return t.id === tagId; });
+  if (!tag) return;
 
   readRows_(SHEET_NAMES.projects).forEach(function (p) {
-    if (idsToDelete.indexOf(p.projectFolderId) !== -1) {
-      updateRecord_(SHEET_NAMES.projects, PROJECT_FIELDS, 'id', p.id, { id: p.id, projectFolderId: null });
+    const projectTags = (p.tags || '').split(',').map(function (t) { return t.trim(); }).filter(Boolean);
+    if (projectTags.includes(tag.name)) {
+      const remaining = projectTags.filter(function (t) { return t !== tag.name; }).join(',');
+      updateRecord_(SHEET_NAMES.projects, PROJECT_FIELDS, 'id', p.id, { id: p.id, tags: remaining });
     }
   });
 
-  const sheet = getSheet_(SHEET_NAMES.projectFolders);
-  const headers = ensureColumns_(sheet, PROJECT_FOLDER_FIELDS);
+  const sheet = getSheet_(SHEET_NAMES.tags);
+  const headers = ensureColumns_(sheet, TAG_FIELDS);
   const idIdx = headers.indexOf('id');
   const data = sheet.getDataRange().getValues();
-  for (let r = data.length - 1; r >= 1; r--) { // bottom-up so row indices don't shift mid-loop
-    if (idsToDelete.indexOf(data[r][idIdx]) !== -1) {
+  for (let r = data.length - 1; r >= 1; r--) {
+    if (data[r][idIdx] === tagId) {
       sheet.deleteRow(r + 1);
+      break;
     }
   }
 }
@@ -390,8 +405,8 @@ function doGet(e) {
   try {
     if (action === 'listProjectFiles') {
       result = listProjectFiles_(e.parameter.projectId);
-    } else if (action === 'listProjectFolders') {
-      result = readRows_(SHEET_NAMES.projectFolders);
+    } else if (action === 'listTags') {
+      result = readRows_(SHEET_NAMES.tags);
     } else if (action === 'listProjects') {
       result = readRows_(SHEET_NAMES.projects);
     } else if (action === 'listVersions') {
@@ -445,25 +460,19 @@ function doPost(e) {
   const values = e.parameter.payload ? JSON.parse(e.parameter.payload) : {};
   const now = new Date().toISOString();
 
-  if (action === 'createProjectFolder') {
+  if (action === 'createTag') {
     requireWrite_(user);
     values.id = values.id || Utilities.getUuid();
     values.createdAt = now;
     values.createdBy = user.email;
     withLock_(function () {
-      appendRecord_(SHEET_NAMES.projectFolders, PROJECT_FOLDER_FIELDS, values);
+      createTag_(values);
     });
     return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
-  } else if (action === 'renameProjectFolder') {
+  } else if (action === 'deleteTag') {
     requireWrite_(user);
     withLock_(function () {
-      updateRecord_(SHEET_NAMES.projectFolders, PROJECT_FOLDER_FIELDS, 'id', values.id, values);
-    });
-    return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
-  } else if (action === 'deleteProjectFolder') {
-    requireWrite_(user);
-    withLock_(function () {
-      deleteProjectFolder_(values.id);
+      deleteTag_(values.id);
     });
     return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
   } else if (action === 'uploadProjectAttachment') {
