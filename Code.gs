@@ -15,6 +15,7 @@ const SHEET_NAMES = {
   agencyHoldCo: 'AgencyHoldCo',
   tentpoleShows: 'TentpoleShows',
   tags: 'Tags',
+  projectFileLinks: 'ProjectFileLinks',
 };
 
 // slackUserId is optional and manually entered (e.g. copied from a
@@ -63,7 +64,18 @@ const TENTPOLE_SHOW_FIELDS = ['id', 'name'];
 // can't. Browse (the separate tree+list page) is retired; this lives in
 // the Assignment Log instead, consolidating "find/organize a project" into
 // one page instead of two overlapping ones.
-const TAG_FIELDS = ['id', 'name', 'createdAt', 'createdBy'];
+const TAG_FIELDS = ['id', 'name', 'color', 'createdAt', 'createdBy'];
+
+// Project Files (§ Planner tool) started as Drive-upload-only; this lets a
+// planner also point at something that already lives elsewhere (a client's
+// shared deck, a WeTransfer link) without downloading and re-uploading it
+// into Drive just to have it show up in the same list (confirmed 2026-09-10).
+const PROJECT_FILE_LINK_FIELDS = ['id', 'projectId', 'name', 'url', 'createdAt', 'createdBy'];
+
+// Preset swatches only (confirmed 2026-09-10) — matches the managed-tag
+// philosophy (§6.3): picking from a fixed palette keeps every tag visually
+// distinct without letting anyone pick an illegible or clashing custom hex.
+const TAG_COLORS = ['#0064FF', '#0E9F8E', '#C98A2C', '#C24463', '#7C5CBF', '#2B8A9E', '#8A8271', '#000A3C'];
 
 // One-time setup — run manually from the Apps Script editor, not exposed via
 // doGet/doPost. Seeds the caller as a write user and a couple of example
@@ -94,6 +106,7 @@ function setupSchema() {
   const agencyHoldCo = ensureSheet_(ss, SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.tags, TAG_FIELDS);
+  ensureSheet_(ss, SHEET_NAMES.projectFileLinks, PROJECT_FILE_LINK_FIELDS);
 
   const usersSheet = ss.getSheetByName(SHEET_NAMES.users);
   if (usersSheet.getLastRow() < 2) {
@@ -209,6 +222,24 @@ function updateRecord_(sheetName, fields, idField, id, values) {
           sheet.getRange(r + 1, colIdx + 1).setValue(v);
         }
       });
+      return true;
+    }
+  }
+  return false;
+}
+
+// Generic single-row delete by exact match on one key field — for lookup
+// tables with no synthetic id (TeamRoster, AgencyHoldCo), where the natural
+// key IS the field to match on. Entities needing a cascade into other
+// sheets (deleteTag_, deleteProject_) still get their own dedicated function.
+function deleteRowByKey_(sheetName, fields, keyField, keyValue) {
+  const sheet = getSheet_(sheetName);
+  const headers = ensureColumns_(sheet, fields);
+  const keyIdx = headers.indexOf(keyField);
+  const data = sheet.getDataRange().getValues();
+  for (let r = data.length - 1; r >= 1; r--) {
+    if (data[r][keyIdx] === keyValue) {
+      sheet.deleteRow(r + 1);
       return true;
     }
   }
@@ -359,7 +390,47 @@ function createTag_(values) {
   if (existing.some(function (t) { return (t.name || '').toLowerCase() === name.toLowerCase(); })) {
     throw new Error('A tag named "' + name + '" already exists.');
   }
-  appendRecord_(SHEET_NAMES.tags, TAG_FIELDS, { id: values.id, name: name, createdAt: values.createdAt, createdBy: values.createdBy });
+  const color = values.color || TAG_COLORS[existing.length % TAG_COLORS.length];
+  appendRecord_(SHEET_NAMES.tags, TAG_FIELDS, { id: values.id, name: name, color: color, createdAt: values.createdAt, createdBy: values.createdBy });
+}
+
+// Cascades to Versions too (mirrors deleteTag_'s cascade philosophy) —
+// otherwise a deleted project would leave orphaned version rows still
+// showing up in the Plans Log with no parent to join against. Deliberately
+// does NOT touch the Drive folder — deleting real files a planner may have
+// uploaded is a much bigger, harder-to-reverse action than removing a sheet
+// row, and isn't what "delete this project" was asked for.
+function deleteProject_(projectId) {
+  const versionsSheet = getSheet_(SHEET_NAMES.versions);
+  const vHeaders = ensureColumns_(versionsSheet, VERSION_FIELDS);
+  const vProjectIdx = vHeaders.indexOf('projectId');
+  const vData = versionsSheet.getDataRange().getValues();
+  for (let r = vData.length - 1; r >= 1; r--) {
+    if (vData[r][vProjectIdx] === projectId) {
+      versionsSheet.deleteRow(r + 1);
+    }
+  }
+
+  const linksSheet = getSheet_(SHEET_NAMES.projectFileLinks);
+  const lHeaders = ensureColumns_(linksSheet, PROJECT_FILE_LINK_FIELDS);
+  const lProjectIdx = lHeaders.indexOf('projectId');
+  const lData = linksSheet.getDataRange().getValues();
+  for (let r = lData.length - 1; r >= 1; r--) {
+    if (lData[r][lProjectIdx] === projectId) {
+      linksSheet.deleteRow(r + 1);
+    }
+  }
+
+  const sheet = getSheet_(SHEET_NAMES.projects);
+  const headers = ensureColumns_(sheet, PROJECT_FIELDS);
+  const idIdx = headers.indexOf('id');
+  const data = sheet.getDataRange().getValues();
+  for (let r = data.length - 1; r >= 1; r--) {
+    if (data[r][idIdx] === projectId) {
+      sheet.deleteRow(r + 1);
+      break;
+    }
+  }
 }
 
 // Removes a tag from the managed list and strips it from every project
@@ -405,6 +476,8 @@ function doGet(e) {
   try {
     if (action === 'listProjectFiles') {
       result = listProjectFiles_(e.parameter.projectId);
+    } else if (action === 'listProjectFileLinks') {
+      result = readRows_(SHEET_NAMES.projectFileLinks).filter(function (r) { return r.projectId === e.parameter.projectId; });
     } else if (action === 'listTags') {
       result = readRows_(SHEET_NAMES.tags);
     } else if (action === 'listProjects') {
@@ -475,6 +548,42 @@ function doPost(e) {
       deleteTag_(values.id);
     });
     return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
+  } else if (action === 'updateTag') {
+    requireWrite_(user);
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.tags, TAG_FIELDS, 'id', values.id, values);
+    });
+    return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
+  } else if (action === 'deleteProject') {
+    requireWrite_(user);
+    withLock_(function () {
+      deleteProject_(values.id);
+    });
+    return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
+  } else if (action === 'addProjectFileLink') {
+    requireWrite_(user);
+    values.id = values.id || Utilities.getUuid();
+    values.createdAt = now;
+    values.createdBy = user.email;
+    withLock_(function () {
+      appendRecord_(SHEET_NAMES.projectFileLinks, PROJECT_FILE_LINK_FIELDS, values);
+    });
+    return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
+  } else if (action === 'deleteProjectFileLink') {
+    requireWrite_(user);
+    withLock_(function () {
+      const sheet = getSheet_(SHEET_NAMES.projectFileLinks);
+      const headers = ensureColumns_(sheet, PROJECT_FILE_LINK_FIELDS);
+      const idIdx = headers.indexOf('id');
+      const data = sheet.getDataRange().getValues();
+      for (let r = data.length - 1; r >= 1; r--) {
+        if (data[r][idIdx] === values.id) {
+          sheet.deleteRow(r + 1);
+          break;
+        }
+      }
+    });
+    return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
   } else if (action === 'uploadProjectAttachment') {
     requireWrite_(user);
     uploadProjectAttachment_(e.parameter.projectId, e.parameter.filename, e.parameter.mimeType, e.parameter.contentBase64);
@@ -537,6 +646,26 @@ function doPost(e) {
     requireWrite_(user);
     withLock_(function () {
       appendRecord_(SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS, values);
+    });
+  } else if (action === 'updateTeamRosterEntry') {
+    requireWrite_(user);
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.teamRoster, TEAM_ROSTER_FIELDS, 'teamMemberName', values.teamMemberName, values);
+    });
+  } else if (action === 'deleteTeamRosterEntry') {
+    requireWrite_(user);
+    withLock_(function () {
+      deleteRowByKey_(SHEET_NAMES.teamRoster, TEAM_ROSTER_FIELDS, 'teamMemberName', values.teamMemberName);
+    });
+  } else if (action === 'updateAgencyHoldCoEntry') {
+    requireWrite_(user);
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS, 'agency', values.agency, values);
+    });
+  } else if (action === 'deleteAgencyHoldCoEntry') {
+    requireWrite_(user);
+    withLock_(function () {
+      deleteRowByKey_(SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS, 'agency', values.agency);
     });
   } else if (action === 'createTentpoleShow') {
     requireWrite_(user);
