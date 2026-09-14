@@ -13,6 +13,8 @@ const SHEET_NAMES = {
   versions: 'Versions',
   teamRoster: 'TeamRoster',
   agencyHoldCo: 'AgencyHoldCo',
+  holdCos: 'HoldCos',
+  pitchTeams: 'PitchTeams',
   tentpoleShows: 'TentpoleShows',
   tags: 'Tags',
   projectFileLinks: 'ProjectFileLinks',
@@ -48,6 +50,15 @@ const VERSION_FIELDS = [
 
 const TEAM_ROSTER_FIELDS = ['teamMemberName', 'pitchTeam'];
 const AGENCY_HOLDCO_FIELDS = ['agency', 'holdCo'];
+
+// HoldCo/PitchTeam (confirmed 2026-09-14) — standalone managed lists, the
+// parent side of Agency/Pitch Lead's nesting, creatable before anything is
+// assigned under them yet (e.g. onboarding a new HoldCo relationship ahead
+// of any specific agency deal). Keyed on name, same natural-key convention
+// as TeamRoster/AgencyHoldCo below.
+const HOLDCO_FIELDS = ['name'];
+const PITCH_TEAM_FIELDS = ['name'];
+
 const TENTPOLE_SHOW_FIELDS = ['id', 'name'];
 
 // §6.3 — managed tag vocabulary, confirmed 2026-09-08. Deliberately not
@@ -104,6 +115,8 @@ function setupSchema() {
   ensureSheet_(ss, SHEET_NAMES.versions, VERSION_FIELDS);
   const roster = ensureSheet_(ss, SHEET_NAMES.teamRoster, TEAM_ROSTER_FIELDS);
   const agencyHoldCo = ensureSheet_(ss, SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS);
+  ensureSheet_(ss, SHEET_NAMES.holdCos, HOLDCO_FIELDS);
+  ensureSheet_(ss, SHEET_NAMES.pitchTeams, PITCH_TEAM_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.tags, TAG_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.projectFileLinks, PROJECT_FILE_LINK_FIELDS);
@@ -132,8 +145,13 @@ function ensureSheet_(ss, name, headers) {
   return sheet;
 }
 
+// Auto-creates the sheet if it doesn't exist yet — lets a brand-new sheet
+// (e.g. HoldCos/PitchTeams, added 2026-09-14) come into existence on first
+// use via the normal read/write actions below, without needing setupSchema()
+// manually re-run from the Apps Script editor.
 function getSheet_(name) {
-  return SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  return ss.getSheetByName(name) || ss.insertSheet(name);
 }
 
 function readRows_(sheetName) {
@@ -244,6 +262,25 @@ function deleteRowByKey_(sheetName, fields, keyField, keyValue) {
     }
   }
   return false;
+}
+
+// Updates every row in `sheetName` whose `foreignKeyField` equals `oldValue`
+// to `newValue` (pass '' to clear/orphan rather than rename) — used when a
+// HoldCo/Pitch Team is renamed or deleted, so Agency/TeamRoster rows
+// referencing it by name don't silently point at a name that no longer
+// exists. Leaf rows themselves are never deleted by this — they just become
+// unassigned, same philosophy as deleteTag_ stripping a tag from projects
+// rather than deleting the projects.
+function cascadeForeignKey_(sheetName, fields, foreignKeyField, oldValue, newValue) {
+  const sheet = getSheet_(sheetName);
+  const headers = ensureColumns_(sheet, fields);
+  const colIdx = headers.indexOf(foreignKeyField);
+  const data = sheet.getDataRange().getValues();
+  for (let r = 1; r < data.length; r++) {
+    if (data[r][colIdx] === oldValue) {
+      sheet.getRange(r + 1, colIdx + 1).setValue(newValue);
+    }
+  }
 }
 
 // §5.1 — pitchTeam and holdCo are lookup-derived, never manually typed.
@@ -490,6 +527,10 @@ function doGet(e) {
       result = readRows_(SHEET_NAMES.teamRoster);
     } else if (action === 'listAgencyHoldCo') {
       result = readRows_(SHEET_NAMES.agencyHoldCo);
+    } else if (action === 'listHoldCos') {
+      result = readRows_(SHEET_NAMES.holdCos);
+    } else if (action === 'listPitchTeams') {
+      result = readRows_(SHEET_NAMES.pitchTeams);
     } else if (action === 'listTentpoleShows') {
       result = readRows_(SHEET_NAMES.tentpoleShows);
     } else if (action === 'whoami') {
@@ -666,6 +707,62 @@ function doPost(e) {
     requireWrite_(user);
     withLock_(function () {
       deleteRowByKey_(SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS, 'agency', values.agency);
+    });
+  } else if (action === 'createHoldCo') {
+    requireWrite_(user);
+    withLock_(function () {
+      appendRecord_(SHEET_NAMES.holdCos, HOLDCO_FIELDS, values);
+    });
+  } else if (action === 'updateHoldCo') {
+    // payload: { originalName, name } — originalName locates the row,
+    // name is the (possibly unchanged) new value, cascaded into every
+    // AgencyHoldCo row that referenced the old name.
+    requireWrite_(user);
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.holdCos, HOLDCO_FIELDS, 'name', values.originalName, { name: values.name });
+      cascadeForeignKey_(SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS, 'holdCo', values.originalName, values.name);
+    });
+  } else if (action === 'deleteHoldCo') {
+    requireWrite_(user);
+    withLock_(function () {
+      deleteRowByKey_(SHEET_NAMES.holdCos, HOLDCO_FIELDS, 'name', values.name);
+      cascadeForeignKey_(SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS, 'holdCo', values.name, '');
+    });
+  } else if (action === 'createPitchTeam') {
+    requireWrite_(user);
+    withLock_(function () {
+      appendRecord_(SHEET_NAMES.pitchTeams, PITCH_TEAM_FIELDS, values);
+    });
+  } else if (action === 'updatePitchTeam') {
+    requireWrite_(user);
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.pitchTeams, PITCH_TEAM_FIELDS, 'name', values.originalName, { name: values.name });
+      cascadeForeignKey_(SHEET_NAMES.teamRoster, TEAM_ROSTER_FIELDS, 'pitchTeam', values.originalName, values.name);
+    });
+  } else if (action === 'deletePitchTeam') {
+    requireWrite_(user);
+    withLock_(function () {
+      deleteRowByKey_(SHEET_NAMES.pitchTeams, PITCH_TEAM_FIELDS, 'name', values.name);
+      cascadeForeignKey_(SHEET_NAMES.teamRoster, TEAM_ROSTER_FIELDS, 'pitchTeam', values.name, '');
+    });
+  } else if (action === 'createUser') {
+    requireWrite_(user);
+    values.role = values.role || 'read';
+    withLock_(function () {
+      appendRecord_(SHEET_NAMES.users, USER_FIELDS, values);
+    });
+  } else if (action === 'updateUser') {
+    // payload: { originalEmail, email, name } — role is deliberately never
+    // sent from the Lead Media Planners settings page (§ access model:
+    // Write access stays a separate, deliberate admin action).
+    requireWrite_(user);
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.users, USER_FIELDS, 'email', values.originalEmail, { email: values.email, name: values.name });
+    });
+  } else if (action === 'deleteUser') {
+    requireWrite_(user);
+    withLock_(function () {
+      deleteRowByKey_(SHEET_NAMES.users, USER_FIELDS, 'email', values.email);
     });
   } else if (action === 'createTentpoleShow') {
     requireWrite_(user);
