@@ -271,15 +271,30 @@ function deleteRowByKey_(sheetName, fields, keyField, keyValue) {
 // exists. Leaf rows themselves are never deleted by this — they just become
 // unassigned, same philosophy as deleteTag_ stripping a tag from projects
 // rather than deleting the projects.
+// Writes the whole column back in one setValues() call instead of one
+// setValue() round-trip per matching row (confirmed 2026-09-15) — the
+// per-row version held the shared script lock (see withLock_) for as long
+// as the sheet had matching rows, which could stall every OTHER concurrent
+// write (e.g. an unrelated "add Pitch Lead") behind it. Same failure mode
+// the 2026-09-04 fix eliminated for createProject's Drive folder creation,
+// just reintroduced here — this closes it the same way, by making the held
+// operation fast rather than moving it outside the lock.
 function cascadeForeignKey_(sheetName, fields, foreignKeyField, oldValue, newValue) {
   const sheet = getSheet_(sheetName);
   const headers = ensureColumns_(sheet, fields);
   const colIdx = headers.indexOf(foreignKeyField);
   const data = sheet.getDataRange().getValues();
-  for (let r = 1; r < data.length; r++) {
-    if (data[r][colIdx] === oldValue) {
-      sheet.getRange(r + 1, colIdx + 1).setValue(newValue);
+  if (data.length <= 1) return;
+  let changed = false;
+  const column = data.slice(1).map(function (row) {
+    if (row[colIdx] === oldValue) {
+      changed = true;
+      return [newValue];
     }
+    return [row[colIdx]];
+  });
+  if (changed) {
+    sheet.getRange(2, colIdx + 1, column.length, 1).setValues(column);
   }
 }
 
