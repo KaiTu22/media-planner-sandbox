@@ -752,12 +752,16 @@ function doPost(e) {
       appendRecord_(SHEET_NAMES.users, USER_FIELDS, values);
     });
   } else if (action === 'updateUser') {
-    // payload: { originalEmail, email, name } — role is deliberately never
-    // sent from the Lead Media Planners settings page (§ access model:
-    // Write access stays a separate, deliberate admin action).
+    // payload: { originalEmail, email, name, role? } — role is optional so a
+    // plain name/email edit never accidentally touches it; only sent when
+    // the Lead Media Planners settings page's role toggle is what changed
+    // (confirmed 2026-09-14 — Write access is still a deliberate action,
+    // just now one taken from this page instead of hand-editing the Sheet).
     requireWrite_(user);
+    const patch = { email: values.email, name: values.name };
+    if (values.role) patch.role = values.role;
     withLock_(function () {
-      updateRecord_(SHEET_NAMES.users, USER_FIELDS, 'email', values.originalEmail, { email: values.email, name: values.name });
+      updateRecord_(SHEET_NAMES.users, USER_FIELDS, 'email', values.originalEmail, patch);
     });
   } else if (action === 'deleteUser') {
     requireWrite_(user);
