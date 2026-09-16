@@ -789,6 +789,23 @@ function doPost(e) {
     withLock_(function () {
       appendRecord_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, values);
     });
+  } else if (action === 'updateTentpoleShow') {
+    // Keyed on the synthetic id (like Tags), not the name — renaming never
+    // needs an old/new-key distinction the way HoldCo/PitchTeam's
+    // natural-key rename does.
+    requireWrite_(user);
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, 'id', values.id, values);
+    });
+  } else if (action === 'deleteTentpoleShow') {
+    // Projects referencing this show keep their tentpoleShowId cleared, not
+    // the project itself deleted — same non-destructive cascade philosophy
+    // as deleteHoldCo_/deletePitchTeam.
+    requireWrite_(user);
+    withLock_(function () {
+      deleteRowByKey_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, 'id', values.id);
+      cascadeForeignKey_(SHEET_NAMES.projects, PROJECT_FIELDS, 'tentpoleShowId', values.id, '');
+    });
   }
 
   return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
