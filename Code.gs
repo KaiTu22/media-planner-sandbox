@@ -18,6 +18,7 @@ const SHEET_NAMES = {
   tentpoleShows: 'TentpoleShows',
   tags: 'Tags',
   projectFileLinks: 'ProjectFileLinks',
+  closedDeals: 'ClosedDeals',
 };
 
 // slackUserId is optional and manually entered (e.g. copied from a
@@ -83,6 +84,18 @@ const TAG_FIELDS = ['id', 'name', 'color', 'createdAt', 'createdBy'];
 // into Drive just to have it show up in the same list (confirmed 2026-09-10).
 const PROJECT_FILE_LINK_FIELDS = ['id', 'projectId', 'name', 'url', 'createdAt', 'createdBy'];
 
+// Same field names Supabase's closed_deals table already used (confirmed
+// 2026-09-16) — deliberately, so media-planner-tool's buildSupabaseDealRow()/
+// supabaseRowToDealShape() row-shape mapping works unchanged against this
+// sheet too, and the one-time historical migration (migrateClosedDealsFromSupabase)
+// is a straight copy, not a re-mapping.
+const CLOSED_DEAL_FIELDS = [
+  'deal_id', 'project_id', 'version_id', 'project_name', 'brand_name', 'sub_brand_name',
+  'agency_name', 'version_name', 'deal_category', 'tentpole_show_name', 'deal_status',
+  'verified_by', 'verified_at', 'verification_notes', 'marked_closed_at',
+  'total_investment', 'total_margin_percent', 'snapshot', 'updated_at',
+];
+
 // Preset swatches only (confirmed 2026-09-10) — matches the managed-tag
 // philosophy (§6.3): picking from a fixed palette keeps every tag visually
 // distinct without letting anyone pick an illegible or clashing custom hex.
@@ -108,6 +121,30 @@ function authorizeMailAndFetchAccess() {
   Logger.log('Mail sent to ' + Session.getActiveUser().getEmail());
 }
 
+// One-time historical backfill (2026-09-16) — run once from the Apps Script
+// editor after deploying the ClosedDeals sheet/actions. Pulls every row
+// currently in Supabase's closed_deals table (read-only against Supabase;
+// this sandbox never writes there) and upserts it into the new sheet, using
+// the exact same field names so no re-mapping is needed. Safe to re-run —
+// upsertClosedDeal-equivalent logic below updates in place by deal_id.
+// UrlFetchApp is already an authorized scope (see the Slack webhook call
+// above), so this shouldn't need a fresh consent screen.
+function migrateClosedDealsFromSupabase() {
+  const SUPABASE_URL = 'https://xybahqtnyviofvynljhw.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_klh9Ue6-vG4aQ3XpeFBQHg_0h5gGvsm';
+  const fields = CLOSED_DEAL_FIELDS.join(',');
+  const url = SUPABASE_URL + '/rest/v1/closed_deals?select=' + fields;
+  const response = UrlFetchApp.fetch(url, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY },
+  });
+  const rows = JSON.parse(response.getContentText());
+  rows.forEach(function (row) {
+    const updated = updateRecord_(SHEET_NAMES.closedDeals, CLOSED_DEAL_FIELDS, 'deal_id', row.deal_id, row);
+    if (!updated) appendRecord_(SHEET_NAMES.closedDeals, CLOSED_DEAL_FIELDS, row);
+  });
+  Logger.log('Migrated ' + rows.length + ' closed deal(s) from Supabase.');
+}
+
 function setupSchema() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   ensureSheet_(ss, SHEET_NAMES.users, USER_FIELDS);
@@ -120,6 +157,7 @@ function setupSchema() {
   ensureSheet_(ss, SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.tags, TAG_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.projectFileLinks, PROJECT_FILE_LINK_FIELDS);
+  ensureSheet_(ss, SHEET_NAMES.closedDeals, CLOSED_DEAL_FIELDS);
 
   const usersSheet = ss.getSheetByName(SHEET_NAMES.users);
   if (usersSheet.getLastRow() < 2) {
@@ -161,11 +199,16 @@ function readRows_(sheetName) {
   return data.slice(1).map(function (row) { return rowToObject_(headers, row); });
 }
 
+// Fields that store a nested JS object as a JSON string in the sheet cell —
+// stringified on write, parsed back out on read. 'snapshot' (ClosedDeals)
+// added 2026-09-16 alongside the original 'packages' (Versions).
+const JSON_FIELDS = ['packages', 'snapshot'];
+
 function rowToObject_(headers, row) {
   const obj = {};
   headers.forEach(function (header, i) {
     let value = row[i];
-    if (header === 'packages' && typeof value === 'string' && value) {
+    if (JSON_FIELDS.includes(header) && typeof value === 'string' && value) {
       try {
         value = JSON.parse(value);
       } catch (err) {
@@ -219,7 +262,7 @@ function appendRecord_(sheetName, fields, values) {
   const headers = ensureColumns_(sheet, fields);
   const row = headers.map(function (h) {
     let v = values[h];
-    if (h === 'packages' && v && typeof v === 'object') v = JSON.stringify(v);
+    if (JSON_FIELDS.includes(h) && v && typeof v === 'object') v = JSON.stringify(v);
     return v === undefined || v === null ? '' : v;
   });
   sheet.appendRow(row);
@@ -235,7 +278,7 @@ function updateRecord_(sheetName, fields, idField, id, values) {
       fields.forEach(function (f) {
         if (Object.prototype.hasOwnProperty.call(values, f)) {
           let v = values[f];
-          if (f === 'packages' && v && typeof v === 'object') v = JSON.stringify(v);
+          if (JSON_FIELDS.includes(f) && v && typeof v === 'object') v = JSON.stringify(v);
           const colIdx = headers.indexOf(f);
           sheet.getRange(r + 1, colIdx + 1).setValue(v);
         }
@@ -546,6 +589,8 @@ function doGet(e) {
       result = readRows_(SHEET_NAMES.holdCos);
     } else if (action === 'listPitchTeams') {
       result = readRows_(SHEET_NAMES.pitchTeams);
+    } else if (action === 'listClosedDeals') {
+      result = readRows_(SHEET_NAMES.closedDeals);
     } else if (action === 'listTentpoleShows') {
       result = readRows_(SHEET_NAMES.tentpoleShows);
     } else if (action === 'whoami') {
@@ -782,6 +827,20 @@ function doPost(e) {
     requireWrite_(user);
     withLock_(function () {
       deleteRowByKey_(SHEET_NAMES.users, USER_FIELDS, 'email', values.email);
+    });
+  } else if (action === 'upsertClosedDeal') {
+    // Mirrors Supabase's .upsert(row, {onConflict:'deal_id'}) semantics using
+    // pieces that already exist — update in place if the deal_id is already
+    // known, otherwise append a new row.
+    requireWrite_(user);
+    withLock_(function () {
+      const updated = updateRecord_(SHEET_NAMES.closedDeals, CLOSED_DEAL_FIELDS, 'deal_id', values.deal_id, values);
+      if (!updated) appendRecord_(SHEET_NAMES.closedDeals, CLOSED_DEAL_FIELDS, values);
+    });
+  } else if (action === 'deleteClosedDeal') {
+    requireWrite_(user);
+    withLock_(function () {
+      deleteRowByKey_(SHEET_NAMES.closedDeals, CLOSED_DEAL_FIELDS, 'deal_id', values.deal_id);
     });
   } else if (action === 'createTentpoleShow') {
     requireWrite_(user);
