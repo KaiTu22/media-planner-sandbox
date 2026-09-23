@@ -16,6 +16,7 @@ const SHEET_NAMES = {
   holdCos: 'HoldCos',
   pitchTeams: 'PitchTeams',
   tentpoleShows: 'TentpoleShows',
+  seasonYears: 'SeasonYears',
   tags: 'Tags',
   projectFileLinks: 'ProjectFileLinks',
   closedDeals: 'ClosedDeals',
@@ -61,6 +62,12 @@ const HOLDCO_FIELDS = ['name'];
 const PITCH_TEAM_FIELDS = ['name'];
 
 const TENTPOLE_SHOW_FIELDS = ['id', 'name'];
+
+// Sponsorship Hub (in progress) — a single flexible label rather than
+// separate structured year/season fields, since it needs to hold both
+// "Season 51" and "2027" depending on the show. Same id+name shape as
+// Tentpole Shows.
+const SEASON_YEAR_FIELDS = ['id', 'name'];
 
 // §6.3 — managed tag vocabulary, confirmed 2026-09-08. Deliberately not
 // free-form: assigning a tag to a project picks from this list; adding a
@@ -155,6 +162,7 @@ function setupSchema() {
   ensureSheet_(ss, SHEET_NAMES.holdCos, HOLDCO_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.pitchTeams, PITCH_TEAM_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS);
+  ensureSheet_(ss, SHEET_NAMES.seasonYears, SEASON_YEAR_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.tags, TAG_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.projectFileLinks, PROJECT_FILE_LINK_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.closedDeals, CLOSED_DEAL_FIELDS);
@@ -593,6 +601,8 @@ function doGet(e) {
       result = readRows_(SHEET_NAMES.closedDeals);
     } else if (action === 'listTentpoleShows') {
       result = readRows_(SHEET_NAMES.tentpoleShows);
+    } else if (action === 'listSeasonYears') {
+      result = readRows_(SHEET_NAMES.seasonYears);
     } else if (action === 'whoami') {
       result = getCurrentUser_();
     } else {
@@ -864,6 +874,24 @@ function doPost(e) {
     withLock_(function () {
       deleteRowByKey_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, 'id', values.id);
       cascadeForeignKey_(SHEET_NAMES.projects, PROJECT_FIELDS, 'tentpoleShowId', values.id, '');
+    });
+  } else if (action === 'createSeasonYear') {
+    requireWrite_(user);
+    values.id = values.id || Utilities.getUuid();
+    withLock_(function () {
+      appendRecord_(SHEET_NAMES.seasonYears, SEASON_YEAR_FIELDS, values);
+    });
+  } else if (action === 'updateSeasonYear') {
+    requireWrite_(user);
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.seasonYears, SEASON_YEAR_FIELDS, 'id', values.id, values);
+    });
+  } else if (action === 'deleteSeasonYear') {
+    // No cascade yet — nothing references seasonYearId until
+    // SponsorshipPackages exists (Sponsorship Hub, in progress).
+    requireWrite_(user);
+    withLock_(function () {
+      deleteRowByKey_(SHEET_NAMES.seasonYears, SEASON_YEAR_FIELDS, 'id', values.id);
     });
   }
 
