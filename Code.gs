@@ -20,6 +20,7 @@ const SHEET_NAMES = {
   tags: 'Tags',
   projectFileLinks: 'ProjectFileLinks',
   closedDeals: 'ClosedDeals',
+  sponsorshipPackages: 'SponsorshipPackages',
 };
 
 // slackUserId is optional and manually entered (e.g. copied from a
@@ -71,6 +72,18 @@ const TENTPOLE_SHOW_FIELDS = ['id', 'name'];
 // genuine child record: deleting a Show deletes its Season/Years outright
 // rather than orphaning them (see deleteRowsByForeignKey_).
 const SEASON_YEAR_FIELDS = ['id', 'showId', 'name'];
+
+// Sponsorship Hub catalog entity (confirmed 2026-09-23) — the pre-built
+// packages/placements a planner can browse and attach to a project, kept
+// as growing inventory rather than tied to any specific deal. `placements`
+// and `blendGroups` are JSON blobs (see JSON_FIELDS) — arrays of objects,
+// not their own sheets, since this is a build-a-Sheet-later export target
+// rather than something needing per-placement querying yet.
+const SPONSORSHIP_PACKAGE_FIELDS = [
+  'id', 'showId', 'seasonYearId', 'name', 'status',
+  'placements', 'blendGroups',
+  'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
+];
 
 // §6.3 — managed tag vocabulary, confirmed 2026-09-08. Deliberately not
 // free-form: assigning a tag to a project picks from this list; adding a
@@ -166,6 +179,7 @@ function setupSchema() {
   ensureSheet_(ss, SHEET_NAMES.pitchTeams, PITCH_TEAM_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.seasonYears, SEASON_YEAR_FIELDS);
+  ensureSheet_(ss, SHEET_NAMES.sponsorshipPackages, SPONSORSHIP_PACKAGE_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.tags, TAG_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.projectFileLinks, PROJECT_FILE_LINK_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.closedDeals, CLOSED_DEAL_FIELDS);
@@ -213,7 +227,7 @@ function readRows_(sheetName) {
 // Fields that store a nested JS object as a JSON string in the sheet cell —
 // stringified on write, parsed back out on read. 'snapshot' (ClosedDeals)
 // added 2026-09-16 alongside the original 'packages' (Versions).
-const JSON_FIELDS = ['packages', 'snapshot'];
+const JSON_FIELDS = ['packages', 'snapshot', 'placements', 'blendGroups'];
 
 function rowToObject_(headers, row) {
   const obj = {};
@@ -628,6 +642,8 @@ function doGet(e) {
       result = readRows_(SHEET_NAMES.tentpoleShows);
     } else if (action === 'listSeasonYears') {
       result = readRows_(SHEET_NAMES.seasonYears);
+    } else if (action === 'listSponsorshipPackages') {
+      result = readRows_(SHEET_NAMES.sponsorshipPackages);
     } else if (action === 'whoami') {
       result = getCurrentUser_();
     } else {
@@ -904,9 +920,14 @@ function doPost(e) {
       const deletedSeasonYearIds = deleteRowsByForeignKey_(SHEET_NAMES.seasonYears, SEASON_YEAR_FIELDS, 'showId', values.id);
       deletedSeasonYearIds.forEach(function (seasonYearId) {
         cascadeForeignKey_(SHEET_NAMES.projects, PROJECT_FIELDS, 'seasonYearId', seasonYearId, '');
+        cascadeForeignKey_(SHEET_NAMES.sponsorshipPackages, SPONSORSHIP_PACKAGE_FIELDS, 'seasonYearId', seasonYearId, '');
       });
       deleteRowByKey_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, 'id', values.id);
       cascadeForeignKey_(SHEET_NAMES.projects, PROJECT_FIELDS, 'tentpoleShowId', values.id, '');
+      // Sponsorship Hub packages are real built inventory, not a soft
+      // reference — orphan (clear showId), never cascade-delete the
+      // package itself just because its Show went away.
+      cascadeForeignKey_(SHEET_NAMES.sponsorshipPackages, SPONSORSHIP_PACKAGE_FIELDS, 'showId', values.id, '');
     });
   } else if (action === 'createSeasonYear') {
     requireWrite_(user);
@@ -920,14 +941,37 @@ function doPost(e) {
       updateRecord_(SHEET_NAMES.seasonYears, SEASON_YEAR_FIELDS, 'id', values.id, values);
     });
   } else if (action === 'deleteSeasonYear') {
-    // No cascade to SponsorshipPackages yet — nothing references
-    // seasonYearId there until SponsorshipPackages exists (Sponsorship Hub,
-    // in progress). Projects referencing this season/year keep their
-    // seasonYearId cleared, same non-destructive cascade as tentpoleShowId.
+    // Projects and Sponsorship Hub packages referencing this season/year
+    // keep it cleared, not deleted — same non-destructive cascade as
+    // tentpoleShowId.
     requireWrite_(user);
     withLock_(function () {
       deleteRowByKey_(SHEET_NAMES.seasonYears, SEASON_YEAR_FIELDS, 'id', values.id);
       cascadeForeignKey_(SHEET_NAMES.projects, PROJECT_FIELDS, 'seasonYearId', values.id, '');
+      cascadeForeignKey_(SHEET_NAMES.sponsorshipPackages, SPONSORSHIP_PACKAGE_FIELDS, 'seasonYearId', values.id, '');
+    });
+  } else if (action === 'createSponsorshipPackage') {
+    requireWrite_(user);
+    values.id = values.id || Utilities.getUuid();
+    values.status = values.status || 'active';
+    values.createdAt = now;
+    values.createdBy = user.email;
+    values.updatedAt = now;
+    values.updatedBy = user.email;
+    withLock_(function () {
+      appendRecord_(SHEET_NAMES.sponsorshipPackages, SPONSORSHIP_PACKAGE_FIELDS, values);
+    });
+  } else if (action === 'updateSponsorshipPackage') {
+    requireWrite_(user);
+    values.updatedAt = now;
+    values.updatedBy = user.email;
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.sponsorshipPackages, SPONSORSHIP_PACKAGE_FIELDS, 'id', values.id, values);
+    });
+  } else if (action === 'deleteSponsorshipPackage') {
+    requireWrite_(user);
+    withLock_(function () {
+      deleteRowByKey_(SHEET_NAMES.sponsorshipPackages, SPONSORSHIP_PACKAGE_FIELDS, 'id', values.id);
     });
   }
 
