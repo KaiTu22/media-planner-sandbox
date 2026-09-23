@@ -36,7 +36,7 @@ const PROJECT_FIELDS = [
   'leadMediaPlannerEmail', 'leadSellerEmail', 'marketingProjectLead',
   'sponsorshipStrategyLead', 'salesAccountManager', 'yieldContact',
   'pitchLeadName', 'pitchTeam', 'rushRequest', 'mediaPlanStatus', 'dealStatus',
-  'dealCategory', 'tentpoleShowId', 'folderId', 'driveFolderLink',
+  'dealCategory', 'tentpoleShowId', 'seasonYearId', 'folderId', 'driveFolderLink',
   'salesforceLink', 'scratchpadLink', 'budgetSheetLink', 'sponsorshipPlansLink',
   'planRequestDate', 'planDueDate', 'campaignStartDate', 'campaignEndDate',
   'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
@@ -65,9 +65,12 @@ const TENTPOLE_SHOW_FIELDS = ['id', 'name'];
 
 // Sponsorship Hub (in progress) — a single flexible label rather than
 // separate structured year/season fields, since it needs to hold both
-// "Season 51" and "2027" depending on the show. Same id+name shape as
-// Tentpole Shows.
-const SEASON_YEAR_FIELDS = ['id', 'name'];
+// "Season 51" and "2027" depending on the show. Nests under a specific
+// Show via showId (confirmed 2026-09-23) — "Season 51" only means
+// something under "Survivor" — so unlike Tentpole Shows itself, this is a
+// genuine child record: deleting a Show deletes its Season/Years outright
+// rather than orphaning them (see deleteRowsByForeignKey_).
+const SEASON_YEAR_FIELDS = ['id', 'showId', 'name'];
 
 // §6.3 — managed tag vocabulary, confirmed 2026-09-08. Deliberately not
 // free-form: assigning a tag to a project picks from this list; adding a
@@ -313,6 +316,28 @@ function deleteRowByKey_(sheetName, fields, keyField, keyValue) {
     }
   }
   return false;
+}
+
+// Deletes every row in `sheetName` whose `foreignKeyField` equals `keyValue`
+// — unlike deleteRowByKey_ (first match only), for genuine child records
+// that shouldn't be orphaned when their parent is deleted (e.g. Season/Years
+// under a Show). Returns the deleted rows' own `id` values, so callers can
+// cascade further (e.g. clearing Project.seasonYearId for any project that
+// pointed at one of the now-deleted child rows).
+function deleteRowsByForeignKey_(sheetName, fields, foreignKeyField, keyValue) {
+  const sheet = getSheet_(sheetName);
+  const headers = ensureColumns_(sheet, fields);
+  const fkIdx = headers.indexOf(foreignKeyField);
+  const idIdx = headers.indexOf('id');
+  const data = sheet.getDataRange().getValues();
+  const deletedIds = [];
+  for (let r = data.length - 1; r >= 1; r--) {
+    if (data[r][fkIdx] === keyValue) {
+      deletedIds.push(data[r][idIdx]);
+      sheet.deleteRow(r + 1);
+    }
+  }
+  return deletedIds;
 }
 
 // Updates every row in `sheetName` whose `foreignKeyField` equals `oldValue`
@@ -869,9 +894,17 @@ function doPost(e) {
   } else if (action === 'deleteTentpoleShow') {
     // Projects referencing this show keep their tentpoleShowId cleared, not
     // the project itself deleted — same non-destructive cascade philosophy
-    // as deleteHoldCo_/deletePitchTeam.
+    // as deleteHoldCo_/deletePitchTeam. Season/Years are genuine children of
+    // a Show (not just a soft reference the way Project's is), so those
+    // rows are deleted outright rather than orphaned — and any project
+    // pointing at one of them has its seasonYearId cleared the same way
+    // tentpoleShowId is below.
     requireWrite_(user);
     withLock_(function () {
+      const deletedSeasonYearIds = deleteRowsByForeignKey_(SHEET_NAMES.seasonYears, SEASON_YEAR_FIELDS, 'showId', values.id);
+      deletedSeasonYearIds.forEach(function (seasonYearId) {
+        cascadeForeignKey_(SHEET_NAMES.projects, PROJECT_FIELDS, 'seasonYearId', seasonYearId, '');
+      });
       deleteRowByKey_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, 'id', values.id);
       cascadeForeignKey_(SHEET_NAMES.projects, PROJECT_FIELDS, 'tentpoleShowId', values.id, '');
     });
@@ -887,11 +920,14 @@ function doPost(e) {
       updateRecord_(SHEET_NAMES.seasonYears, SEASON_YEAR_FIELDS, 'id', values.id, values);
     });
   } else if (action === 'deleteSeasonYear') {
-    // No cascade yet — nothing references seasonYearId until
-    // SponsorshipPackages exists (Sponsorship Hub, in progress).
+    // No cascade to SponsorshipPackages yet — nothing references
+    // seasonYearId there until SponsorshipPackages exists (Sponsorship Hub,
+    // in progress). Projects referencing this season/year keep their
+    // seasonYearId cleared, same non-destructive cascade as tentpoleShowId.
     requireWrite_(user);
     withLock_(function () {
       deleteRowByKey_(SHEET_NAMES.seasonYears, SEASON_YEAR_FIELDS, 'id', values.id);
+      cascadeForeignKey_(SHEET_NAMES.projects, PROJECT_FIELDS, 'seasonYearId', values.id, '');
     });
   }
 
