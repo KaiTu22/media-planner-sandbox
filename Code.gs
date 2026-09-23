@@ -21,6 +21,8 @@ const SHEET_NAMES = {
   projectFileLinks: 'ProjectFileLinks',
   closedDeals: 'ClosedDeals',
   sponsorshipPackages: 'SponsorshipPackages',
+  placementCategories: 'PlacementCategories',
+  placementMenuItems: 'PlacementMenuItems',
 };
 
 // slackUserId is optional and manually entered (e.g. copied from a
@@ -84,6 +86,25 @@ const SPONSORSHIP_PACKAGE_FIELDS = [
   'placements', 'blendGroups',
   'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
 ];
+
+// Placement Menu (confirmed 2026-09-23) — a curated, human-facing menu on
+// top of the calc engine's existing fixed 14-value placementType enum
+// (calculations.js's categorizeSponsorshipLineItem), not a new
+// categorization system. Each Category maps to exactly one placementType,
+// so picking a menu item when building a Hub package automatically carries
+// the correct revenue-type tag without the planner touching it directly.
+const PLACEMENT_CATEGORY_FIELDS = ['id', 'name', 'placementType'];
+
+// A menu item's `lines` is a JSON array (see JSON_FIELDS) of 1+ line
+// templates (platform, description, size, costMethod, defaultRate) — a
+// single-entry array is a simple one-line placement; multiple entries is a
+// bundle (e.g. "Paramount Digital Package" in the real reference template
+// expands into Billboard + Pre-Roll + 1A Midroll + Midroll as one unit,
+// only some of which carry their own rate). Picking one from the menu adds
+// all of its lines to the package at once — matching the same grouped-line
+// shape (isGrouped/groupItems) the External Plan Generator script already
+// uses, not a new structure.
+const PLACEMENT_MENU_ITEM_FIELDS = ['id', 'categoryId', 'name', 'lines'];
 
 // §6.3 — managed tag vocabulary, confirmed 2026-09-08. Deliberately not
 // free-form: assigning a tag to a project picks from this list; adding a
@@ -180,6 +201,8 @@ function setupSchema() {
   ensureSheet_(ss, SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.seasonYears, SEASON_YEAR_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.sponsorshipPackages, SPONSORSHIP_PACKAGE_FIELDS);
+  ensureSheet_(ss, SHEET_NAMES.placementCategories, PLACEMENT_CATEGORY_FIELDS);
+  ensureSheet_(ss, SHEET_NAMES.placementMenuItems, PLACEMENT_MENU_ITEM_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.tags, TAG_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.projectFileLinks, PROJECT_FILE_LINK_FIELDS);
   ensureSheet_(ss, SHEET_NAMES.closedDeals, CLOSED_DEAL_FIELDS);
@@ -227,7 +250,7 @@ function readRows_(sheetName) {
 // Fields that store a nested JS object as a JSON string in the sheet cell —
 // stringified on write, parsed back out on read. 'snapshot' (ClosedDeals)
 // added 2026-09-16 alongside the original 'packages' (Versions).
-const JSON_FIELDS = ['packages', 'snapshot', 'placements', 'blendGroups'];
+const JSON_FIELDS = ['packages', 'snapshot', 'placements', 'blendGroups', 'lines'];
 
 function rowToObject_(headers, row) {
   const obj = {};
@@ -644,6 +667,10 @@ function doGet(e) {
       result = readRows_(SHEET_NAMES.seasonYears);
     } else if (action === 'listSponsorshipPackages') {
       result = readRows_(SHEET_NAMES.sponsorshipPackages);
+    } else if (action === 'listPlacementCategories') {
+      result = readRows_(SHEET_NAMES.placementCategories);
+    } else if (action === 'listPlacementMenuItems') {
+      result = readRows_(SHEET_NAMES.placementMenuItems);
     } else if (action === 'whoami') {
       result = getCurrentUser_();
     } else {
@@ -972,6 +999,42 @@ function doPost(e) {
     requireWrite_(user);
     withLock_(function () {
       deleteRowByKey_(SHEET_NAMES.sponsorshipPackages, SPONSORSHIP_PACKAGE_FIELDS, 'id', values.id);
+    });
+  } else if (action === 'createPlacementCategory') {
+    requireWrite_(user);
+    values.id = values.id || Utilities.getUuid();
+    withLock_(function () {
+      appendRecord_(SHEET_NAMES.placementCategories, PLACEMENT_CATEGORY_FIELDS, values);
+    });
+  } else if (action === 'updatePlacementCategory') {
+    requireWrite_(user);
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.placementCategories, PLACEMENT_CATEGORY_FIELDS, 'id', values.id, values);
+    });
+  } else if (action === 'deletePlacementCategory') {
+    // Menu items are genuine children of a category (same reasoning as
+    // Season/Year under Show) — deleted outright, not orphaned, since a
+    // menu item with no category has nowhere to appear in the picker.
+    requireWrite_(user);
+    withLock_(function () {
+      deleteRowsByForeignKey_(SHEET_NAMES.placementMenuItems, PLACEMENT_MENU_ITEM_FIELDS, 'categoryId', values.id);
+      deleteRowByKey_(SHEET_NAMES.placementCategories, PLACEMENT_CATEGORY_FIELDS, 'id', values.id);
+    });
+  } else if (action === 'createPlacementMenuItem') {
+    requireWrite_(user);
+    values.id = values.id || Utilities.getUuid();
+    withLock_(function () {
+      appendRecord_(SHEET_NAMES.placementMenuItems, PLACEMENT_MENU_ITEM_FIELDS, values);
+    });
+  } else if (action === 'updatePlacementMenuItem') {
+    requireWrite_(user);
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.placementMenuItems, PLACEMENT_MENU_ITEM_FIELDS, 'id', values.id, values);
+    });
+  } else if (action === 'deletePlacementMenuItem') {
+    requireWrite_(user);
+    withLock_(function () {
+      deleteRowByKey_(SHEET_NAMES.placementMenuItems, PLACEMENT_MENU_ITEM_FIELDS, 'id', values.id);
     });
   }
 
