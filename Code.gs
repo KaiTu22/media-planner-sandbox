@@ -96,15 +96,22 @@ const SPONSORSHIP_PACKAGE_FIELDS = [
 const PLACEMENT_CATEGORY_FIELDS = ['id', 'name', 'placementType'];
 
 // A menu item's `lines` is a JSON array (see JSON_FIELDS) of 1+ line
-// templates (platform, description, size, costMethod, defaultRate) — a
-// single-entry array is a simple one-line placement; multiple entries is a
-// bundle (e.g. "Paramount Digital Package" in the real reference template
-// expands into Billboard + Pre-Roll + 1A Midroll + Midroll as one unit,
-// only some of which carry their own rate). Picking one from the menu adds
-// all of its lines to the package at once — matching the same grouped-line
-// shape (isGrouped/groupItems) the External Plan Generator script already
-// uses, not a new structure.
-const PLACEMENT_MENU_ITEM_FIELDS = ['id', 'categoryId', 'name', 'lines'];
+// templates (platform, description, size, and — only when rateMode is
+// 'perLine' — their own costMethod/defaultRate) — a single-entry array is
+// a simple one-line placement; multiple entries is a bundle (e.g.
+// "Paramount Digital Package" in the real reference template expands into
+// Billboard + Pre-Roll + 1A Midroll + Midroll as one unit). Picking one
+// from the menu adds all of its lines to the package at once — matching
+// the same grouped-line shape (isGrouped/groupItems) the External Plan
+// Generator script already uses, not a new structure.
+//
+// rateMode (confirmed 2026-09-24) distinguishes two real bundle shapes
+// from the reference template: 'perLine' (default) — each line carries
+// its own rate, some intentionally blank ("bundled, no charge"); 'shared'
+// — every line in the bundle is priced at one common CPM/Flat Fee/AV rate
+// (sharedCostMethod/sharedRate), rather than forcing each line to either
+// have its own rate or show as $0.
+const PLACEMENT_MENU_ITEM_FIELDS = ['id', 'categoryId', 'name', 'rateMode', 'sharedCostMethod', 'sharedRate', 'lines'];
 
 // §6.3 — managed tag vocabulary, confirmed 2026-09-08. Deliberately not
 // free-form: assigning a tag to a project picks from this list; adding a
