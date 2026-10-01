@@ -823,6 +823,11 @@ function doPost(e) {
     withLock_(function () {
       updateRecord_(SHEET_NAMES.versions, VERSION_FIELDS, 'id', values.id, values);
     });
+  } else if (action === 'deleteVersion') {
+    requireWrite_(user);
+    withLock_(function () {
+      deleteRowByKey_(SHEET_NAMES.versions, VERSION_FIELDS, 'id', values.id);
+    });
   } else if (action === 'createTeamRosterEntry') {
     requireWrite_(user);
     withLock_(function () {
