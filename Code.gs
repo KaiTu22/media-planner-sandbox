@@ -853,6 +853,15 @@ function doPost(e) {
     withLock_(function () {
       updateRecord_(SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS, 'agency', values.agency, values);
     });
+  } else if (action === 'renameAgency') {
+    // payload: { originalName, name } — originalName locates the row, name
+    // is the new agency text, cascaded into every Project that referenced
+    // the old name (same pattern as updateHoldCo below).
+    requireWrite_(user);
+    withLock_(function () {
+      updateRecord_(SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS, 'agency', values.originalName, { agency: values.name });
+      cascadeForeignKey_(SHEET_NAMES.projects, PROJECT_FIELDS, 'agency', values.originalName, values.name);
+    });
   } else if (action === 'deleteAgencyHoldCoEntry') {
     requireWrite_(user);
     withLock_(function () {
