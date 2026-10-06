@@ -160,7 +160,7 @@ const TAG_COLORS = ['#0064FF', '#0E9F8E', '#C98A2C', '#C24463', '#7C5CBF', '#2B8
 // headless deploy doesn't trigger the interactive OAuth consent dialog
 // needed to grant new scopes (Drive access), only the browser IDE does.
 function authorizeDriveAccess() {
-  const testValues = { account: 'Debug', brand: 'Debug', projectName: 'Debug (delete me)' };
+  const testValues = { account: 'Debug', brand: 'Debug', projectName: 'Debug (delete me)', createdAt: new Date().toISOString() };
   createProjectFolder_(testValues);
   Logger.log(testValues.driveFolderLink);
 }
@@ -436,13 +436,24 @@ function applyProjectLookups_(values) {
 }
 
 // §5.2 — auto-creates a subfolder under the shared parent, named
-// "{Account} - {Brand} - {ProjectName}" (confirmed 2026-08-31).
+// "{Account} - {Brand} - {ProjectName}" (confirmed 2026-08-31), nested
+// under a "{year}" subfolder based on the project's creation year
+// (confirmed 2026-10-06) so the parent folder doesn't become one giant
+// flat list as project count grows across years.
 function createProjectFolder_(values) {
   const name = [values.account, values.brand, values.projectName].filter(Boolean).join(' - ');
   const parent = DriveApp.getFolderById(PARENT_FOLDER_ID);
-  const folder = parent.createFolder(name || 'Untitled Project');
+  const yearFolder = getOrCreateYearFolder_(parent, new Date(values.createdAt).getFullYear());
+  const folder = yearFolder.createFolder(name || 'Untitled Project');
   values.folderId = folder.getId();
   values.driveFolderLink = folder.getUrl();
+}
+
+function getOrCreateYearFolder_(parent, year) {
+  const name = String(year);
+  const existing = parent.getFoldersByName(name);
+  if (existing.hasNext()) return existing.next();
+  return parent.createFolder(name);
 }
 
 // General-purpose file upload (confirmed 2026-09-04) — lets a planner
@@ -1060,4 +1071,39 @@ function doPost(e) {
   }
 
   return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
+}
+
+// One-time backfill (confirmed 2026-10-06; run manually from the Apps
+// Script editor's Run button, not exposed as a doPost action) — moves
+// every existing project's folder, created back when all project
+// folders sat flat under the parent, into a "{year}" subfolder matching
+// its createdAt, to match what createProjectFolder_ now does for new
+// projects. Safe to re-run: skips any project whose folder is already
+// inside its correct year folder.
+function migrateProjectFoldersIntoYearFolders() {
+  const parent = DriveApp.getFolderById(PARENT_FOLDER_ID);
+  const projects = readRows_(SHEET_NAMES.projects);
+  let moved = 0, skipped = 0, failed = 0;
+  projects.forEach(function (project) {
+    if (!project.folderId || !project.createdAt) { skipped++; return; }
+    try {
+      const folder = DriveApp.getFolderById(project.folderId);
+      const yearFolder = getOrCreateYearFolder_(parent, new Date(project.createdAt).getFullYear());
+      const currentParents = folder.getParents();
+      // The parent folder now lives in a Shared Drive (confirmed
+      // 2026-10-06) -- Shared Drive items are strictly single-parent and
+      // reject the legacy multi-parent addFolder/removeFolder reparent
+      // trick ("Cannot use this operation on a shared drive item"), so
+      // this needs the newer moveTo() reparent call instead.
+      const alreadyThere = currentParents.hasNext() && currentParents.next().getId() === yearFolder.getId();
+      if (alreadyThere) { skipped++; return; }
+      folder.moveTo(yearFolder);
+      moved++;
+    } catch (e) {
+      failed++;
+      Logger.log('Failed to move folder for project ' + project.id + ': ' + e.message);
+    }
+  });
+  Logger.log('Migration complete: moved=' + moved + ' skipped=' + skipped + ' failed=' + failed);
+  return { moved: moved, skipped: skipped, failed: failed };
 }
