@@ -1,0 +1,43 @@
+name: Backend Health Check
+
+# Confirmed 2026-10-06: Google stopped resolving the generic
+# script.google.com/macros/s/.../exec URL for this domain-restricted
+# deployment ("Sorry, unable to open the file"), breaking both
+# media-planner-app and media-planner-tool until the URL was switched to
+# the domain-restricted /a/macros/paramount.com/s/.../exec form. That
+# error signature is a Drive-level resolution failure, so it shows up
+# even for an unauthenticated request (a healthy deployment instead
+# serves a normal Google sign-in page) -- this runs on a schedule to
+# catch a repeat before a user has to report it.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check Apps Script backend is reachable
+        run: |
+          URL="https://script.google.com/a/macros/paramount.com/s/AKfycbxSFOffhttkk_81Y-ivuSOcPFWhlTwfNaOzW3Zw5toMnKRreZ4UYVaAkUfiemwltvfx/exec?action=whoami"
+
+          if ! BODY=$(curl -sL --max-time 20 --fail "$URL"); then
+            echo "::error::Request to the Apps Script backend failed outright (network error, timeout, or non-2xx status)."
+            exit 1
+          fi
+
+          if echo "$BODY" | grep -qi "unable to open the file"; then
+            echo "::error::Apps Script deployment is broken -- Google returned 'unable to open the file'. This is the same failure mode confirmed 2026-10-06; check Manage Deployments on the bound Sheet's Apps Script project."
+            echo "--- response (first 500 chars) ---"
+            echo "$BODY" | head -c 500
+            exit 1
+          fi
+
+          if [ -z "$BODY" ]; then
+            echo "::error::Apps Script backend returned an empty response."
+            exit 1
+          fi
+
+          echo "Backend responded normally (sign-in gate or real data) -- no outage signature detected."
