@@ -36,7 +36,7 @@ const USER_FIELDS = ['email', 'name', 'role', 'slackUserId'];
 // equivalent "Pitch Lead" column feeding the same Maps-tab lookup.
 const PROJECT_FIELDS = [
   'id', 'projectName', 'account', 'brand', 'agency', 'holdCo',
-  'leadMediaPlannerEmail', 'leadSellerEmail', 'marketingProjectLead',
+  'leadMediaPlannerEmail', 'leadMediaPlanner2Email', 'leadSellerEmail', 'marketingProjectLead',
   'sponsorshipStrategyLead', 'salesAccountManager', 'yieldContact',
   'pitchLeadName', 'pitchTeam', 'rushRequest', 'mediaPlanStatus', 'dealStatus',
   'dealCategory', 'tentpoleShowId', 'seasonYearId', 'folderId', 'driveFolderLink',
@@ -502,7 +502,7 @@ function uploadProjectFile_(projectId, content) {
 // exists; until then this just logs and skips, same as a missing recipient.
 // Never blocks project creation — both paths are wrapped by the caller.
 function sendAssignmentNotifications_(project) {
-  const emails = [project.leadMediaPlannerEmail]
+  const emails = [project.leadMediaPlannerEmail, project.leadMediaPlanner2Email]
     .concat((project.notifyEmails || '').split(','))
     .map(function (e) { return (e || '').trim(); })
     .filter(Boolean);
