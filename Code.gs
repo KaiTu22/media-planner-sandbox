@@ -247,11 +247,50 @@ function getSheet_(name) {
   return ss.getSheetByName(name) || ss.insertSheet(name);
 }
 
+// Cached (confirmed 2026-10-07) -- every list* action funnels through
+// this one function, and it previously did a full getDataRange().getValues()
+// read + a rowToObject_ pass (including JSON.parse-ing any JSON_FIELDS
+// blob in every row) on every single call, with no reuse across requests.
+// Under concurrent load (several of these firing at once on one page
+// load) that was slow enough to occasionally queue up behind Apps
+// Script's own execution concurrency limits and blow past the client's
+// timeout entirely -- see jsonpRequest's own fail()/reason comment. A
+// short TTL cache turns the common case (many reads of data that hasn't
+// changed in the last CACHE_TTL_SECONDS) into a cache hit instead of a
+// fresh sheet scan every time. Invalidated wholesale on every write (see
+// doPost) rather than tracked per-sheet, since several delete/cascade
+// paths mutate sheets directly rather than through the generic write
+// helpers below -- a missed per-sheet invalidation would mean stale data
+// silently visible to other users for the rest of the TTL, which is a
+// worse failure mode than the cost of over-invalidating on every write.
+const CACHE_TTL_SECONDS = 45;
+
 function readRows_(sheetName) {
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'rows:' + sheetName;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    try {
+      return JSON.parse(cached);
+    } catch (e) {
+      // Fall through to a real read if the cached value is somehow corrupt.
+    }
+  }
+
   const sheet = getSheet_(sheetName);
   const data = sheet.getDataRange().getValues();
   const headers = data[0];
-  return data.slice(1).map(function (row) { return rowToObject_(headers, row); });
+  const rows = data.slice(1).map(function (row) { return rowToObject_(headers, row); });
+
+  try {
+    cache.put(cacheKey, JSON.stringify(rows), CACHE_TTL_SECONDS);
+  } catch (e) {
+    // CacheService caps a single value at 100KB -- a sheet with enough
+    // rows/large JSON_FIELDS blobs can exceed that. Skip caching this one
+    // rather than fail the read itself, which already succeeded above.
+  }
+
+  return rows;
 }
 
 // Fields that store a nested JS object as a JSON string in the sheet cell —
@@ -730,6 +769,14 @@ function doPost(e) {
   const values = e.parameter.payload ? JSON.parse(e.parameter.payload) : {};
   const now = new Date().toISOString();
 
+  // Every write invalidates every cached list wholesale (see readRows_'s
+  // own comment for why not per-sheet) -- done up front rather than at
+  // the end, since most action branches below return early and a
+  // post-write invalidation would need to be repeated in each one.
+  CacheService.getScriptCache().removeAll(
+    Object.values(SHEET_NAMES).map(function (name) { return 'rows:' + name; })
+  );
+
   if (action === 'createTag') {
     requireWrite_(user);
     values.id = values.id || Utilities.getUuid();
@@ -1106,4 +1153,30 @@ function migrateProjectFoldersIntoYearFolders() {
   });
   Logger.log('Migration complete: moved=' + moved + ' skipped=' + skipped + ' failed=' + failed);
   return { moved: moved, skipped: skipped, failed: failed };
+}
+
+// One-time manual check (confirmed 2026-10-07; run from the Apps Script
+// editor's Run button, not exposed via doGet/doPost) -- confirms
+// readRows_'s new cache is actually producing a speedup, rather than
+// trusting the implementation without measuring it. Tests against
+// Versions (one of the two sheets with large packages JSON blobs) since
+// that's where the cache matters most; a small lookup sheet wouldn't
+// show a meaningful difference either way.
+function testReadRowsCachePerformance() {
+  const sheetName = SHEET_NAMES.versions;
+  CacheService.getScriptCache().remove('rows:' + sheetName); // force a cold start
+
+  const t0 = Date.now();
+  const coldRows = readRows_(sheetName);
+  const coldMs = Date.now() - t0;
+
+  const t1 = Date.now();
+  const warmRows = readRows_(sheetName);
+  const warmMs = Date.now() - t1;
+
+  Logger.log(
+    'Versions sheet (' + coldRows.length + ' rows): ' +
+    'cold read = ' + coldMs + 'ms, cached read = ' + warmMs + 'ms. ' +
+    'Row counts match: ' + (coldRows.length === warmRows.length)
+  );
 }
