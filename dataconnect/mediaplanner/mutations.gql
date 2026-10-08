@@ -10,8 +10,8 @@
 mutation CreateUser($email: String!, $name: String, $role: String, $slackUserId: String) @auth(level: NO_ACCESS) {
   user_insert(data: { email: $email, name: $name, role: $role, slackUserId: $slackUserId })
 }
-mutation UpdateUser($email: String!, $name: String, $role: String, $slackUserId: String) @auth(level: NO_ACCESS) {
-  user_update(key: { email: $email }, data: { name: $name, role: $role, slackUserId: $slackUserId })
+mutation UpdateUser($originalEmail: String!, $email: String, $name: String, $role: String, $slackUserId: String) @auth(level: NO_ACCESS) {
+  user_update(key: { email: $originalEmail }, data: { email: $email, name: $name, role: $role, slackUserId: $slackUserId })
 }
 mutation DeleteUser($email: String!) @auth(level: NO_ACCESS) {
   user_delete(key: { email: $email })
@@ -50,11 +50,13 @@ mutation DeletePitchTeam($name: String!) @auth(level: NO_ACCESS) {
 mutation CreateAgencyHoldCoEntry($agency: String!, $holdCo: String) @auth(level: NO_ACCESS) {
   agencyHoldCo_insert(data: { agency: $agency, holdCo: $holdCo })
 }
-mutation UpdateAgencyHoldCoEntry($agency: String!, $holdCo: String) @auth(level: NO_ACCESS) {
-  agencyHoldCo_update(key: { agency: $agency }, data: { holdCo: $holdCo })
-}
-mutation RenameAgency($originalAgency: String!, $agency: String!) @auth(level: NO_ACCESS) {
-  agencyHoldCo_update(key: { agency: $originalAgency }, data: { agency: $agency })
+# One mutation covers both real call shapes (Code.gs's updateAgencyHoldCoEntry
+# action, where originalAgency===agency and nothing renames, and its
+# renameAgency action, where they differ) -- both just call the generic
+# updateRecord_(sheetName, fields, 'agency', id, values), so updateRecordSql_
+# can drive both through this single originalAgency-keyed mutation.
+mutation RenameAgency($originalAgency: String!, $agency: String, $holdCo: String) @auth(level: NO_ACCESS) {
+  agencyHoldCo_update(key: { agency: $originalAgency }, data: { agency: $agency, holdCo: $holdCo })
 }
 mutation DeleteAgencyHoldCoEntry($agency: String!) @auth(level: NO_ACCESS) {
   agencyHoldCo_delete(key: { agency: $agency })
@@ -183,6 +185,24 @@ mutation DeleteProjectFileLink($id: String!) @auth(level: NO_ACCESS) {
   projectFileLink_delete(key: { id: $id })
 }
 
+# upsertClosedDeal's real logic (Code.gs doPost) is "try update, insert if
+# not found" via the generic updateRecord_/appendRecord_ helpers -- not a
+# database-native upsert -- so this needs a plain update mutation too, not
+# just closedDeal_upsert.
+mutation UpdateClosedDeal(
+  $dealId: String!, $projectId: String, $versionId: String, $projectName: String, $brandName: String, $subBrandName: String,
+  $agencyName: String, $versionName: String, $dealCategory: String, $tentpoleShowName: String, $dealStatus: String,
+  $verifiedBy: String, $verifiedAt: Timestamp, $verificationNotes: String, $markedClosedAt: Timestamp,
+  $totalInvestment: Float, $totalMarginPercent: Float, $snapshot: String, $updatedAt: Timestamp
+) @auth(level: NO_ACCESS) {
+  closedDeal_update(key: { dealId: $dealId }, data: {
+    projectId: $projectId, versionId: $versionId, projectName: $projectName, brandName: $brandName, subBrandName: $subBrandName,
+    agencyName: $agencyName, versionName: $versionName, dealCategory: $dealCategory, tentpoleShowName: $tentpoleShowName, dealStatus: $dealStatus,
+    verifiedBy: $verifiedBy, verifiedAt: $verifiedAt, verificationNotes: $verificationNotes, markedClosedAt: $markedClosedAt,
+    totalInvestment: $totalInvestment, totalMarginPercent: $totalMarginPercent, snapshot: $snapshot, updatedAt: $updatedAt
+  })
+}
+
 mutation UpsertClosedDeal(
   $dealId: String!, $projectId: String, $versionId: String, $projectName: String, $brandName: String, $subBrandName: String,
   $agencyName: String, $versionName: String, $dealCategory: String, $tentpoleShowName: String, $dealStatus: String,
@@ -198,4 +218,44 @@ mutation UpsertClosedDeal(
 }
 mutation DeleteClosedDeal($dealId: String!) @auth(level: NO_ACCESS) {
   closedDeal_delete(key: { dealId: $dealId })
+}
+
+# Bulk cascade operations (confirmed 2026-10-08, written against the real
+# cascadeForeignKey_/deleteRowsByForeignKey_ call sites in Code.gs's doPost,
+# not guessed at in isolation -- one operation per (entity, foreign key
+# field) pair actually used).
+
+mutation UpdateProjectsByAgency($oldValue: String, $newValue: String) @auth(level: NO_ACCESS) {
+  project_updateMany(where: { agency: { eq: $oldValue } }, data: { agency: $newValue })
+}
+mutation UpdateProjectsBySeasonYearId($oldValue: String, $newValue: String) @auth(level: NO_ACCESS) {
+  project_updateMany(where: { seasonYearId: { eq: $oldValue } }, data: { seasonYearId: $newValue })
+}
+mutation UpdateProjectsByTentpoleShowId($oldValue: String, $newValue: String) @auth(level: NO_ACCESS) {
+  project_updateMany(where: { tentpoleShowId: { eq: $oldValue } }, data: { tentpoleShowId: $newValue })
+}
+mutation UpdateAgencyHoldCoByHoldCo($oldValue: String, $newValue: String) @auth(level: NO_ACCESS) {
+  agencyHoldCo_updateMany(where: { holdCo: { eq: $oldValue } }, data: { holdCo: $newValue })
+}
+mutation UpdateTeamRosterByPitchTeam($oldValue: String, $newValue: String) @auth(level: NO_ACCESS) {
+  teamRoster_updateMany(where: { pitchTeam: { eq: $oldValue } }, data: { pitchTeam: $newValue })
+}
+mutation UpdateSponsorshipPackagesBySeasonYearId($oldValue: String, $newValue: String) @auth(level: NO_ACCESS) {
+  sponsorshipPackage_updateMany(where: { seasonYearId: { eq: $oldValue } }, data: { seasonYearId: $newValue })
+}
+mutation UpdateSponsorshipPackagesByShowId($oldValue: String, $newValue: String) @auth(level: NO_ACCESS) {
+  sponsorshipPackage_updateMany(where: { showId: { eq: $oldValue } }, data: { showId: $newValue })
+}
+
+#
+# _deleteMany returns only a count (Int), not the deleted rows -- unlike
+# the original deleteRowsByForeignKey_, which returns the deleted rows' own
+# `id` values so callers can cascade further. Phase 2's implementation
+# handles this as two steps: list+filter (client-side, these are small
+# lookup-ish tables) to capture the ids first, then this bulk delete.
+mutation DeleteSeasonYearsByShowId($showId: String) @auth(level: NO_ACCESS) {
+  seasonYear_deleteMany(where: { showId: { eq: $showId } })
+}
+mutation DeletePlacementMenuItemsByCategoryId($categoryId: String) @auth(level: NO_ACCESS) {
+  placementMenuItem_deleteMany(where: { categoryId: { eq: $categoryId } })
 }
