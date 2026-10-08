@@ -606,14 +606,15 @@ function sendSlackNotification_(subject, lines, emails) {
 // a near-identical variant ("Priority" vs "priority") — the whole point of
 // a managed vocabulary over free-form tagging is avoiding this.
 function createTag_(values) {
-  const existing = readRows_(SHEET_NAMES.tags);
+  // Cut over to SQL Connect 2026-10-08 (Phase 4, Tags first).
+  const existing = readRowsSql_(SHEET_NAMES.tags);
   const name = (values.name || '').trim();
   if (!name) throw new Error('Tag name is required.');
   if (existing.some(function (t) { return (t.name || '').toLowerCase() === name.toLowerCase(); })) {
     throw new Error('A tag named "' + name + '" already exists.');
   }
   const color = values.color || TAG_COLORS[existing.length % TAG_COLORS.length];
-  appendRecord_(SHEET_NAMES.tags, TAG_FIELDS, { id: values.id, name: name, color: color, createdAt: values.createdAt, createdBy: values.createdBy });
+  appendRecordSql_(SHEET_NAMES.tags, TAG_FIELDS, { id: values.id, name: name, color: color, createdAt: values.createdAt, createdBy: values.createdBy });
 }
 
 // Cascades to Versions too (mirrors deleteTag_'s cascade philosophy) —
@@ -660,7 +661,11 @@ function deleteProject_(projectId) {
 // longer exists in the vocabulary. Caller must hold the script lock (see
 // withLock_ in doPost) since this mutates two sheets.
 function deleteTag_(tagId) {
-  const tags = readRows_(SHEET_NAMES.tags);
+  // Cut over to SQL Connect 2026-10-08 (Phase 4, Tags first) -- but only
+  // the Tags-specific calls. The Projects reads/writes below stay on
+  // Sheets deliberately: Projects isn't cut over yet, so that's still
+  // where its real data lives.
+  const tags = readRowsSql_(SHEET_NAMES.tags);
   const tag = tags.find(function (t) { return t.id === tagId; });
   if (!tag) return;
 
@@ -672,16 +677,7 @@ function deleteTag_(tagId) {
     }
   });
 
-  const sheet = getSheet_(SHEET_NAMES.tags);
-  const headers = ensureColumns_(sheet, TAG_FIELDS);
-  const idIdx = headers.indexOf('id');
-  const data = sheet.getDataRange().getValues();
-  for (let r = data.length - 1; r >= 1; r--) {
-    if (data[r][idIdx] === tagId) {
-      sheet.deleteRow(r + 1);
-      break;
-    }
-  }
+  deleteRowByKeySql_(SHEET_NAMES.tags, TAG_FIELDS, 'id', tagId);
 }
 
 function respond_(result, callback) {
@@ -701,7 +697,7 @@ function doGet(e) {
     } else if (action === 'listProjectFileLinks') {
       result = readRows_(SHEET_NAMES.projectFileLinks).filter(function (r) { return r.projectId === e.parameter.projectId; });
     } else if (action === 'listTags') {
-      result = readRows_(SHEET_NAMES.tags);
+      result = readRowsSql_(SHEET_NAMES.tags); // cut over to SQL Connect 2026-10-08 (Phase 4, Tags first)
     } else if (action === 'listProjects') {
       result = readRows_(SHEET_NAMES.projects);
     } else if (action === 'listVersions') {
@@ -795,7 +791,7 @@ function doPost(e) {
   } else if (action === 'updateTag') {
     requireWrite_(user);
     withLock_(function () {
-      updateRecord_(SHEET_NAMES.tags, TAG_FIELDS, 'id', values.id, values);
+      updateRecordSql_(SHEET_NAMES.tags, TAG_FIELDS, 'id', values.id, values); // cut over to SQL Connect 2026-10-08 (Phase 4, Tags first)
     });
     return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
   } else if (action === 'deleteProject') {
@@ -1984,6 +1980,55 @@ function testSqlStorageLayer() {
   rows = readRowsSql_(SHEET_NAMES.projects);
   check('Bulk update cascade applied the new agency', rows.find(function (r) { return r.id === projectId; }).agency, newAgency);
   deleteRowByKeySql_(SHEET_NAMES.projects, PROJECT_FIELDS, 'id', projectId);
+
+  Logger.log(results.join('\n'));
+}
+
+// One-time manual check (confirmed 2026-10-08; run from the Apps Script
+// editor's Run button) -- Phase 4 cutover verification for Tags. Calls
+// doGet/doPost directly with a constructed event object (the most
+// faithful pre-deploy test available -- exercises the real action
+// dispatch, requireWrite_, withLock_, and createTag_'s own validation
+// logic, not just the generic SQL helpers testSqlStorageLayer already
+// covered).
+function testTagsCutover() {
+  const results = [];
+  function check(label, actual, expected) {
+    const pass = JSON.stringify(actual) === JSON.stringify(expected);
+    results.push((pass ? 'PASS' : 'FAIL') + ' -- ' + label + (pass ? '' : (': expected ' + JSON.stringify(expected) + ', got ' + JSON.stringify(actual))));
+  }
+
+  const tagName = 'Cutover Test Tag ' + Utilities.getUuid();
+  const tagId = Utilities.getUuid();
+
+  doPost({ parameter: { action: 'createTag', payload: JSON.stringify({ id: tagId, name: tagName, color: '#123456' }) } });
+  let list = JSON.parse(doGet({ parameter: { action: 'listTags' } }).getContent());
+  check('Tag appears via doGet(listTags) after doPost(createTag)', list.some(function (t) { return t.id === tagId && t.name === tagName; }), true);
+
+  doPost({ parameter: { action: 'updateTag', payload: JSON.stringify({ id: tagId, name: tagName, color: '#654321' }) } });
+  list = JSON.parse(doGet({ parameter: { action: 'listTags' } }).getContent());
+  check('Tag color updated via doPost(updateTag)', list.find(function (t) { return t.id === tagId; }).color, '#654321');
+
+  doPost({ parameter: { action: 'deleteTag', payload: JSON.stringify({ id: tagId }) } });
+  list = JSON.parse(doGet({ parameter: { action: 'listTags' } }).getContent());
+  check('Tag gone via doGet(listTags) after doPost(deleteTag)', list.some(function (t) { return t.id === tagId; }), false);
+
+  // Duplicate-name validation (createTag_'s own logic, not generic SQL
+  // helper behavior) still works post-cutover.
+  const dupName = 'Cutover Dup Test ' + Utilities.getUuid();
+  doPost({ parameter: { action: 'createTag', payload: JSON.stringify({ id: Utilities.getUuid(), name: dupName }) } });
+  let threw = false;
+  try {
+    doPost({ parameter: { action: 'createTag', payload: JSON.stringify({ id: Utilities.getUuid(), name: dupName }) } });
+  } catch (e) {
+    threw = true;
+  }
+  check('Duplicate tag name still rejected', threw, true);
+  // Clean up both the original and (if somehow created) the duplicate.
+  list = JSON.parse(doGet({ parameter: { action: 'listTags' } }).getContent());
+  list.filter(function (t) { return t.name === dupName; }).forEach(function (t) {
+    doPost({ parameter: { action: 'deleteTag', payload: JSON.stringify({ id: t.id }) } });
+  });
 
   Logger.log(results.join('\n'));
 }
