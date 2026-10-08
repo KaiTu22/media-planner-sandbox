@@ -711,7 +711,7 @@ function doGet(e) {
     } else if (action === 'listHoldCos') {
       result = readRowsSql_(SHEET_NAMES.holdCos); // cut over to SQL Connect 2026-10-08 (Phase 4)
     } else if (action === 'listPitchTeams') {
-      result = readRows_(SHEET_NAMES.pitchTeams);
+      result = readRowsSql_(SHEET_NAMES.pitchTeams); // cut over to SQL Connect 2026-10-08 (Phase 4)
     } else if (action === 'listClosedDeals') {
       result = readRows_(SHEET_NAMES.closedDeals);
     } else if (action === 'listTentpoleShows') {
@@ -946,18 +946,20 @@ function doPost(e) {
   } else if (action === 'createPitchTeam') {
     requireWrite_(user);
     withLock_(function () {
-      appendRecord_(SHEET_NAMES.pitchTeams, PITCH_TEAM_FIELDS, values);
+      appendRecordSql_(SHEET_NAMES.pitchTeams, PITCH_TEAM_FIELDS, values); // cut over to SQL Connect 2026-10-08 (Phase 4)
     });
   } else if (action === 'updatePitchTeam') {
+    // TeamRoster isn't cut over yet, so its cascade deliberately stays on
+    // the Sheets-backed cascadeForeignKey_.
     requireWrite_(user);
     withLock_(function () {
-      updateRecord_(SHEET_NAMES.pitchTeams, PITCH_TEAM_FIELDS, 'name', values.originalName, { name: values.name });
+      updateRecordSql_(SHEET_NAMES.pitchTeams, PITCH_TEAM_FIELDS, 'name', values.originalName, { name: values.name }); // cut over to SQL Connect 2026-10-08 (Phase 4)
       cascadeForeignKey_(SHEET_NAMES.teamRoster, TEAM_ROSTER_FIELDS, 'pitchTeam', values.originalName, values.name);
     });
   } else if (action === 'deletePitchTeam') {
     requireWrite_(user);
     withLock_(function () {
-      deleteRowByKey_(SHEET_NAMES.pitchTeams, PITCH_TEAM_FIELDS, 'name', values.name);
+      deleteRowByKeySql_(SHEET_NAMES.pitchTeams, PITCH_TEAM_FIELDS, 'name', values.name); // cut over to SQL Connect 2026-10-08 (Phase 4)
       cascadeForeignKey_(SHEET_NAMES.teamRoster, TEAM_ROSTER_FIELDS, 'pitchTeam', values.name, '');
     });
   } else if (action === 'createUser') {
@@ -2101,6 +2103,44 @@ function testHoldCosCutover() {
   doPost({ parameter: { action: 'deleteHoldCo', payload: JSON.stringify({ name: renamed }) } });
   list = JSON.parse(doGet({ parameter: { action: 'listHoldCos' } }).getContent());
   check('HoldCo gone via doGet(listHoldCos) after doPost(deleteHoldCo)', list.some(function (h) { return h.name === renamed; }), false);
+
+  Logger.log(results.join('\n'));
+}
+
+function migratePitchTeamsToSql() {
+  const existingSql = readRowsSql_(SHEET_NAMES.pitchTeams);
+  const existingNames = new Set(existingSql.map(function (p) { return p.name; }));
+  const sheetRows = readRows_(SHEET_NAMES.pitchTeams);
+  let migrated = 0, skipped = 0;
+  sheetRows.forEach(function (row) {
+    if (existingNames.has(row.name)) { skipped++; return; }
+    appendRecordSql_(SHEET_NAMES.pitchTeams, PITCH_TEAM_FIELDS, row);
+    migrated++;
+  });
+  Logger.log('PitchTeams migration: migrated=' + migrated + ' skipped=' + skipped + ' (sheet had ' + sheetRows.length + ' total)');
+}
+
+function testPitchTeamsCutover() {
+  const results = [];
+  function check(label, actual, expected) {
+    const pass = JSON.stringify(actual) === JSON.stringify(expected);
+    results.push((pass ? 'PASS' : 'FAIL') + ' -- ' + label + (pass ? '' : (': expected ' + JSON.stringify(expected) + ', got ' + JSON.stringify(actual))));
+  }
+
+  const name = 'Cutover Test PitchTeam ' + Utilities.getUuid();
+  const renamed = name + ' Renamed';
+
+  doPost({ parameter: { action: 'createPitchTeam', payload: JSON.stringify({ name: name }) } });
+  let list = JSON.parse(doGet({ parameter: { action: 'listPitchTeams' } }).getContent());
+  check('PitchTeam appears via doGet(listPitchTeams) after doPost(createPitchTeam)', list.some(function (p) { return p.name === name; }), true);
+
+  doPost({ parameter: { action: 'updatePitchTeam', payload: JSON.stringify({ originalName: name, name: renamed }) } });
+  list = JSON.parse(doGet({ parameter: { action: 'listPitchTeams' } }).getContent());
+  check('PitchTeam renamed via doPost(updatePitchTeam)', list.some(function (p) { return p.name === renamed; }) && !list.some(function (p) { return p.name === name; }), true);
+
+  doPost({ parameter: { action: 'deletePitchTeam', payload: JSON.stringify({ name: renamed }) } });
+  list = JSON.parse(doGet({ parameter: { action: 'listPitchTeams' } }).getContent());
+  check('PitchTeam gone via doGet(listPitchTeams) after doPost(deletePitchTeam)', list.some(function (p) { return p.name === renamed; }), false);
 
   Logger.log(results.join('\n'));
 }
