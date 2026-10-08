@@ -1180,3 +1180,24 @@ function testReadRowsCachePerformance() {
     'Row counts match: ' + (coldRows.length === warmRows.length)
   );
 }
+
+// One-time manual check (confirmed 2026-10-07; run from the Apps Script
+// editor's Run button) -- measures actual current data size per sheet,
+// to ground a real "how long would Firestore's 1GB free tier last"
+// estimate instead of guessing. Measures raw JSON.stringify size; actual
+// Firestore storage runs somewhat higher than this due to per-document
+// field-name and index overhead, so treat this as a floor, not the
+// final number.
+function measureCurrentDataSize() {
+  const names = Object.values(SHEET_NAMES);
+  let totalBytes = 0;
+  const lines = [];
+  names.forEach(function (name) {
+    const rows = readRows_(name);
+    const bytes = Utilities.newBlob(JSON.stringify(rows)).getBytes().length;
+    totalBytes += bytes;
+    lines.push(name + ': ' + rows.length + ' rows, ' + (bytes / 1024).toFixed(1) + ' KB');
+  });
+  lines.push('TOTAL: ' + (totalBytes / 1024 / 1024).toFixed(2) + ' MB');
+  Logger.log(lines.join('\n'));
+}
