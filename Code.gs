@@ -709,7 +709,7 @@ function doGet(e) {
     } else if (action === 'listAgencyHoldCo') {
       result = readRows_(SHEET_NAMES.agencyHoldCo);
     } else if (action === 'listHoldCos') {
-      result = readRows_(SHEET_NAMES.holdCos);
+      result = readRowsSql_(SHEET_NAMES.holdCos); // cut over to SQL Connect 2026-10-08 (Phase 4)
     } else if (action === 'listPitchTeams') {
       result = readRows_(SHEET_NAMES.pitchTeams);
     } else if (action === 'listClosedDeals') {
@@ -924,21 +924,23 @@ function doPost(e) {
   } else if (action === 'createHoldCo') {
     requireWrite_(user);
     withLock_(function () {
-      appendRecord_(SHEET_NAMES.holdCos, HOLDCO_FIELDS, values);
+      appendRecordSql_(SHEET_NAMES.holdCos, HOLDCO_FIELDS, values); // cut over to SQL Connect 2026-10-08 (Phase 4)
     });
   } else if (action === 'updateHoldCo') {
     // payload: { originalName, name } — originalName locates the row,
     // name is the (possibly unchanged) new value, cascaded into every
-    // AgencyHoldCo row that referenced the old name.
+    // AgencyHoldCo row that referenced the old name. AgencyHoldCo isn't
+    // cut over yet, so that cascade deliberately stays on the Sheets-
+    // backed cascadeForeignKey_ -- its real data still lives there.
     requireWrite_(user);
     withLock_(function () {
-      updateRecord_(SHEET_NAMES.holdCos, HOLDCO_FIELDS, 'name', values.originalName, { name: values.name });
+      updateRecordSql_(SHEET_NAMES.holdCos, HOLDCO_FIELDS, 'name', values.originalName, { name: values.name }); // cut over to SQL Connect 2026-10-08 (Phase 4)
       cascadeForeignKey_(SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS, 'holdCo', values.originalName, values.name);
     });
   } else if (action === 'deleteHoldCo') {
     requireWrite_(user);
     withLock_(function () {
-      deleteRowByKey_(SHEET_NAMES.holdCos, HOLDCO_FIELDS, 'name', values.name);
+      deleteRowByKeySql_(SHEET_NAMES.holdCos, HOLDCO_FIELDS, 'name', values.name); // cut over to SQL Connect 2026-10-08 (Phase 4)
       cascadeForeignKey_(SHEET_NAMES.agencyHoldCo, AGENCY_HOLDCO_FIELDS, 'holdCo', values.name, '');
     });
   } else if (action === 'createPitchTeam') {
@@ -2053,4 +2055,52 @@ function migrateTagsToSql() {
     migrated++;
   });
   Logger.log('Tags migration: migrated=' + migrated + ' skipped=' + skipped + ' (sheet had ' + sheetRows.length + ' total)');
+}
+
+// One-time data migration (confirmed 2026-10-08; run from the Apps Script
+// editor's Run button) -- copies HoldCos' existing Sheets data into
+// Postgres BEFORE the cutover goes live, per the lesson learned from
+// Tags (migrating after the fact briefly showed real users an empty
+// list). Safe to re-run: skips any HoldCo whose name already exists in
+// Postgres.
+function migrateHoldCosToSql() {
+  const existingSql = readRowsSql_(SHEET_NAMES.holdCos);
+  const existingNames = new Set(existingSql.map(function (h) { return h.name; }));
+  const sheetRows = readRows_(SHEET_NAMES.holdCos);
+  let migrated = 0, skipped = 0;
+  sheetRows.forEach(function (row) {
+    if (existingNames.has(row.name)) { skipped++; return; }
+    appendRecordSql_(SHEET_NAMES.holdCos, HOLDCO_FIELDS, row);
+    migrated++;
+  });
+  Logger.log('HoldCos migration: migrated=' + migrated + ' skipped=' + skipped + ' (sheet had ' + sheetRows.length + ' total)');
+}
+
+// One-time manual check (confirmed 2026-10-08; run from the Apps Script
+// editor's Run button) -- Phase 4 cutover verification for HoldCos,
+// same pattern as testTagsCutover: calls doGet/doPost directly with a
+// constructed event object.
+function testHoldCosCutover() {
+  const results = [];
+  function check(label, actual, expected) {
+    const pass = JSON.stringify(actual) === JSON.stringify(expected);
+    results.push((pass ? 'PASS' : 'FAIL') + ' -- ' + label + (pass ? '' : (': expected ' + JSON.stringify(expected) + ', got ' + JSON.stringify(actual))));
+  }
+
+  const name = 'Cutover Test HoldCo ' + Utilities.getUuid();
+  const renamed = name + ' Renamed';
+
+  doPost({ parameter: { action: 'createHoldCo', payload: JSON.stringify({ name: name }) } });
+  let list = JSON.parse(doGet({ parameter: { action: 'listHoldCos' } }).getContent());
+  check('HoldCo appears via doGet(listHoldCos) after doPost(createHoldCo)', list.some(function (h) { return h.name === name; }), true);
+
+  doPost({ parameter: { action: 'updateHoldCo', payload: JSON.stringify({ originalName: name, name: renamed }) } });
+  list = JSON.parse(doGet({ parameter: { action: 'listHoldCos' } }).getContent());
+  check('HoldCo renamed via doPost(updateHoldCo)', list.some(function (h) { return h.name === renamed; }) && !list.some(function (h) { return h.name === name; }), true);
+
+  doPost({ parameter: { action: 'deleteHoldCo', payload: JSON.stringify({ name: renamed }) } });
+  list = JSON.parse(doGet({ parameter: { action: 'listHoldCos' } }).getContent());
+  check('HoldCo gone via doGet(listHoldCos) after doPost(deleteHoldCo)', list.some(function (h) { return h.name === renamed; }), false);
+
+  Logger.log(results.join('\n'));
 }
