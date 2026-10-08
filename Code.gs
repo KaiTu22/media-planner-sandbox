@@ -715,7 +715,7 @@ function doGet(e) {
     } else if (action === 'listClosedDeals') {
       result = readRows_(SHEET_NAMES.closedDeals);
     } else if (action === 'listTentpoleShows') {
-      result = readRows_(SHEET_NAMES.tentpoleShows);
+      result = readRowsSql_(SHEET_NAMES.tentpoleShows); // cut over to SQL Connect 2026-10-08 (Phase 4)
     } else if (action === 'listSeasonYears') {
       result = readRows_(SHEET_NAMES.seasonYears);
     } else if (action === 'listSponsorshipPackages') {
@@ -1003,7 +1003,7 @@ function doPost(e) {
     requireWrite_(user);
     values.id = values.id || Utilities.getUuid();
     withLock_(function () {
-      appendRecord_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, values);
+      appendRecordSql_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, values); // cut over to SQL Connect 2026-10-08 (Phase 4)
     });
   } else if (action === 'updateTentpoleShow') {
     // Keyed on the synthetic id (like Tags), not the name — renaming never
@@ -1011,7 +1011,7 @@ function doPost(e) {
     // natural-key rename does.
     requireWrite_(user);
     withLock_(function () {
-      updateRecord_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, 'id', values.id, values);
+      updateRecordSql_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, 'id', values.id, values); // cut over to SQL Connect 2026-10-08 (Phase 4)
     });
   } else if (action === 'deleteTentpoleShow') {
     // Projects referencing this show keep their tentpoleShowId cleared, not
@@ -1020,7 +1020,10 @@ function doPost(e) {
     // a Show (not just a soft reference the way Project's is), so those
     // rows are deleted outright rather than orphaned — and any project
     // pointing at one of them has its seasonYearId cleared the same way
-    // tentpoleShowId is below.
+    // tentpoleShowId is below. SeasonYears/Projects/SponsorshipPackages
+    // aren't cut over yet, so all of this stays on the Sheets-backed
+    // helpers deliberately -- only the TentpoleShows row itself (just
+    // below) moves to SQL Connect.
     requireWrite_(user);
     withLock_(function () {
       const deletedSeasonYearIds = deleteRowsByForeignKey_(SHEET_NAMES.seasonYears, SEASON_YEAR_FIELDS, 'showId', values.id);
@@ -1028,7 +1031,7 @@ function doPost(e) {
         cascadeForeignKey_(SHEET_NAMES.projects, PROJECT_FIELDS, 'seasonYearId', seasonYearId, '');
         cascadeForeignKey_(SHEET_NAMES.sponsorshipPackages, SPONSORSHIP_PACKAGE_FIELDS, 'seasonYearId', seasonYearId, '');
       });
-      deleteRowByKey_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, 'id', values.id);
+      deleteRowByKeySql_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, 'id', values.id); // cut over to SQL Connect 2026-10-08 (Phase 4)
       cascadeForeignKey_(SHEET_NAMES.projects, PROJECT_FIELDS, 'tentpoleShowId', values.id, '');
       // Sponsorship Hub packages are real built inventory, not a soft
       // reference — orphan (clear showId), never cascade-delete the
@@ -2141,6 +2144,44 @@ function testPitchTeamsCutover() {
   doPost({ parameter: { action: 'deletePitchTeam', payload: JSON.stringify({ name: renamed }) } });
   list = JSON.parse(doGet({ parameter: { action: 'listPitchTeams' } }).getContent());
   check('PitchTeam gone via doGet(listPitchTeams) after doPost(deletePitchTeam)', list.some(function (p) { return p.name === renamed; }), false);
+
+  Logger.log(results.join('\n'));
+}
+
+function migrateTentpoleShowsToSql() {
+  const existingSql = readRowsSql_(SHEET_NAMES.tentpoleShows);
+  const existingIds = new Set(existingSql.map(function (s) { return s.id; }));
+  const sheetRows = readRows_(SHEET_NAMES.tentpoleShows);
+  let migrated = 0, skipped = 0;
+  sheetRows.forEach(function (row) {
+    if (existingIds.has(row.id)) { skipped++; return; }
+    appendRecordSql_(SHEET_NAMES.tentpoleShows, TENTPOLE_SHOW_FIELDS, row);
+    migrated++;
+  });
+  Logger.log('TentpoleShows migration: migrated=' + migrated + ' skipped=' + skipped + ' (sheet had ' + sheetRows.length + ' total)');
+}
+
+function testTentpoleShowsCutover() {
+  const results = [];
+  function check(label, actual, expected) {
+    const pass = JSON.stringify(actual) === JSON.stringify(expected);
+    results.push((pass ? 'PASS' : 'FAIL') + ' -- ' + label + (pass ? '' : (': expected ' + JSON.stringify(expected) + ', got ' + JSON.stringify(actual))));
+  }
+
+  const id = Utilities.getUuid();
+  const name = 'Cutover Test Show ' + id;
+
+  doPost({ parameter: { action: 'createTentpoleShow', payload: JSON.stringify({ id: id, name: name }) } });
+  let list = JSON.parse(doGet({ parameter: { action: 'listTentpoleShows' } }).getContent());
+  check('Show appears via doGet(listTentpoleShows) after doPost(createTentpoleShow)', list.some(function (s) { return s.id === id && s.name === name; }), true);
+
+  doPost({ parameter: { action: 'updateTentpoleShow', payload: JSON.stringify({ id: id, name: name + ' Renamed' }) } });
+  list = JSON.parse(doGet({ parameter: { action: 'listTentpoleShows' } }).getContent());
+  check('Show renamed via doPost(updateTentpoleShow)', list.find(function (s) { return s.id === id; }).name, name + ' Renamed');
+
+  doPost({ parameter: { action: 'deleteTentpoleShow', payload: JSON.stringify({ id: id }) } });
+  list = JSON.parse(doGet({ parameter: { action: 'listTentpoleShows' } }).getContent());
+  check('Show gone via doGet(listTentpoleShows) after doPost(deleteTentpoleShow)', list.some(function (s) { return s.id === id; }), false);
 
   Logger.log(results.join('\n'));
 }
