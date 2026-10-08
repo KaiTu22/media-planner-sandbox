@@ -1,0 +1,201 @@
+# Create/update/delete mutations for every entity (confirmed 2026-10-08:
+# Data Connect auto-generates <lowercaseType>_insert/_update/_delete per
+# @table type, keyed by whatever field the type's @table(key: ...) names,
+# "id" by default). Bulk cascade operations (_updateMany/_deleteMany, used
+# by cascadeForeignKey_/deleteRowsByForeignKey_'s real call sites) are
+# deliberately deferred to Phase 2, alongside the actual Code.gs rewrite --
+# writing them now without the real call sites in front of me risks
+# guessing the wrong field/relationship.
+
+mutation CreateUser($email: String!, $name: String, $role: String, $slackUserId: String) @auth(level: NO_ACCESS) {
+  user_insert(data: { email: $email, name: $name, role: $role, slackUserId: $slackUserId })
+}
+mutation UpdateUser($email: String!, $name: String, $role: String, $slackUserId: String) @auth(level: NO_ACCESS) {
+  user_update(key: { email: $email }, data: { name: $name, role: $role, slackUserId: $slackUserId })
+}
+mutation DeleteUser($email: String!) @auth(level: NO_ACCESS) {
+  user_delete(key: { email: $email })
+}
+
+mutation CreateTag($id: String!, $name: String, $color: String, $createdAt: Timestamp, $createdBy: String) @auth(level: NO_ACCESS) {
+  tag_insert(data: { id: $id, name: $name, color: $color, createdAt: $createdAt, createdBy: $createdBy })
+}
+mutation UpdateTag($id: String!, $name: String, $color: String) @auth(level: NO_ACCESS) {
+  tag_update(key: { id: $id }, data: { name: $name, color: $color })
+}
+mutation DeleteTag($id: String!) @auth(level: NO_ACCESS) {
+  tag_delete(key: { id: $id })
+}
+
+mutation CreateHoldCo($name: String!) @auth(level: NO_ACCESS) {
+  holdCo_insert(data: { name: $name })
+}
+mutation UpdateHoldCo($originalName: String!, $name: String!) @auth(level: NO_ACCESS) {
+  holdCo_update(key: { name: $originalName }, data: { name: $name })
+}
+mutation DeleteHoldCo($name: String!) @auth(level: NO_ACCESS) {
+  holdCo_delete(key: { name: $name })
+}
+
+mutation CreatePitchTeam($name: String!) @auth(level: NO_ACCESS) {
+  pitchTeam_insert(data: { name: $name })
+}
+mutation UpdatePitchTeam($originalName: String!, $name: String!) @auth(level: NO_ACCESS) {
+  pitchTeam_update(key: { name: $originalName }, data: { name: $name })
+}
+mutation DeletePitchTeam($name: String!) @auth(level: NO_ACCESS) {
+  pitchTeam_delete(key: { name: $name })
+}
+
+mutation CreateAgencyHoldCoEntry($agency: String!, $holdCo: String) @auth(level: NO_ACCESS) {
+  agencyHoldCo_insert(data: { agency: $agency, holdCo: $holdCo })
+}
+mutation UpdateAgencyHoldCoEntry($agency: String!, $holdCo: String) @auth(level: NO_ACCESS) {
+  agencyHoldCo_update(key: { agency: $agency }, data: { holdCo: $holdCo })
+}
+mutation RenameAgency($originalAgency: String!, $agency: String!) @auth(level: NO_ACCESS) {
+  agencyHoldCo_update(key: { agency: $originalAgency }, data: { agency: $agency })
+}
+mutation DeleteAgencyHoldCoEntry($agency: String!) @auth(level: NO_ACCESS) {
+  agencyHoldCo_delete(key: { agency: $agency })
+}
+
+mutation CreateTeamRosterEntry($teamMemberName: String!, $pitchTeam: String) @auth(level: NO_ACCESS) {
+  teamRoster_insert(data: { teamMemberName: $teamMemberName, pitchTeam: $pitchTeam })
+}
+mutation UpdateTeamRosterEntry($teamMemberName: String!, $pitchTeam: String) @auth(level: NO_ACCESS) {
+  teamRoster_update(key: { teamMemberName: $teamMemberName }, data: { pitchTeam: $pitchTeam })
+}
+mutation DeleteTeamRosterEntry($teamMemberName: String!) @auth(level: NO_ACCESS) {
+  teamRoster_delete(key: { teamMemberName: $teamMemberName })
+}
+
+mutation CreateTentpoleShow($id: String!, $name: String) @auth(level: NO_ACCESS) {
+  tentpoleShow_insert(data: { id: $id, name: $name })
+}
+mutation UpdateTentpoleShow($id: String!, $name: String) @auth(level: NO_ACCESS) {
+  tentpoleShow_update(key: { id: $id }, data: { name: $name })
+}
+mutation DeleteTentpoleShow($id: String!) @auth(level: NO_ACCESS) {
+  tentpoleShow_delete(key: { id: $id })
+}
+
+mutation CreateSeasonYear($id: String!, $showId: String, $name: String) @auth(level: NO_ACCESS) {
+  seasonYear_insert(data: { id: $id, showId: $showId, name: $name })
+}
+mutation UpdateSeasonYear($id: String!, $showId: String, $name: String) @auth(level: NO_ACCESS) {
+  seasonYear_update(key: { id: $id }, data: { showId: $showId, name: $name })
+}
+mutation DeleteSeasonYear($id: String!) @auth(level: NO_ACCESS) {
+  seasonYear_delete(key: { id: $id })
+}
+
+mutation CreatePlacementCategory($id: String!, $name: String, $placementType: String) @auth(level: NO_ACCESS) {
+  placementCategory_insert(data: { id: $id, name: $name, placementType: $placementType })
+}
+mutation UpdatePlacementCategory($id: String!, $name: String, $placementType: String) @auth(level: NO_ACCESS) {
+  placementCategory_update(key: { id: $id }, data: { name: $name, placementType: $placementType })
+}
+mutation DeletePlacementCategory($id: String!) @auth(level: NO_ACCESS) {
+  placementCategory_delete(key: { id: $id })
+}
+
+mutation CreatePlacementMenuItem($id: String!, $categoryId: String, $name: String, $rateMode: String, $sharedCostMethod: String, $sharedRate: Float, $lines: String) @auth(level: NO_ACCESS) {
+  placementMenuItem_insert(data: { id: $id, categoryId: $categoryId, name: $name, rateMode: $rateMode, sharedCostMethod: $sharedCostMethod, sharedRate: $sharedRate, lines: $lines })
+}
+mutation UpdatePlacementMenuItem($id: String!, $categoryId: String, $name: String, $rateMode: String, $sharedCostMethod: String, $sharedRate: Float, $lines: String) @auth(level: NO_ACCESS) {
+  placementMenuItem_update(key: { id: $id }, data: { categoryId: $categoryId, name: $name, rateMode: $rateMode, sharedCostMethod: $sharedCostMethod, sharedRate: $sharedRate, lines: $lines })
+}
+mutation DeletePlacementMenuItem($id: String!) @auth(level: NO_ACCESS) {
+  placementMenuItem_delete(key: { id: $id })
+}
+
+mutation CreateProject(
+  $id: String!, $projectName: String, $account: String, $brand: String, $agency: String, $holdCo: String,
+  $leadMediaPlannerEmail: String, $leadMediaPlanner2Email: String, $leadSellerEmail: String,
+  $sponsorshipStrategyLead: String, $salesAccountManager: String, $yieldContact: String,
+  $pitchLeadName: String, $pitchTeam: String, $rushRequest: Boolean, $mediaPlanStatus: String, $dealStatus: String,
+  $dealCategory: String, $tentpoleShowId: String, $seasonYearId: String, $folderId: String, $driveFolderLink: String,
+  $salesforceLink: String, $scratchpadLink: String, $budgetSheetLink: String, $sponsorshipPlansLink: String,
+  $planRequestDate: Date, $planDueDate: Date, $campaignStartDate: Date, $campaignEndDate: Date, $tags: String,
+  $createdAt: Timestamp, $createdBy: String, $updatedAt: Timestamp, $updatedBy: String
+) @auth(level: NO_ACCESS) {
+  project_insert(data: {
+    id: $id, projectName: $projectName, account: $account, brand: $brand, agency: $agency, holdCo: $holdCo,
+    leadMediaPlannerEmail: $leadMediaPlannerEmail, leadMediaPlanner2Email: $leadMediaPlanner2Email, leadSellerEmail: $leadSellerEmail,
+    sponsorshipStrategyLead: $sponsorshipStrategyLead, salesAccountManager: $salesAccountManager, yieldContact: $yieldContact,
+    pitchLeadName: $pitchLeadName, pitchTeam: $pitchTeam, rushRequest: $rushRequest, mediaPlanStatus: $mediaPlanStatus, dealStatus: $dealStatus,
+    dealCategory: $dealCategory, tentpoleShowId: $tentpoleShowId, seasonYearId: $seasonYearId, folderId: $folderId, driveFolderLink: $driveFolderLink,
+    salesforceLink: $salesforceLink, scratchpadLink: $scratchpadLink, budgetSheetLink: $budgetSheetLink, sponsorshipPlansLink: $sponsorshipPlansLink,
+    planRequestDate: $planRequestDate, planDueDate: $planDueDate, campaignStartDate: $campaignStartDate, campaignEndDate: $campaignEndDate, tags: $tags,
+    createdAt: $createdAt, createdBy: $createdBy, updatedAt: $updatedAt, updatedBy: $updatedBy
+  })
+}
+mutation UpdateProject(
+  $id: String!, $projectName: String, $account: String, $brand: String, $agency: String, $holdCo: String,
+  $leadMediaPlannerEmail: String, $leadMediaPlanner2Email: String, $leadSellerEmail: String,
+  $sponsorshipStrategyLead: String, $salesAccountManager: String, $yieldContact: String,
+  $pitchLeadName: String, $pitchTeam: String, $rushRequest: Boolean, $mediaPlanStatus: String, $dealStatus: String,
+  $dealCategory: String, $tentpoleShowId: String, $seasonYearId: String, $folderId: String, $driveFolderLink: String,
+  $salesforceLink: String, $scratchpadLink: String, $budgetSheetLink: String, $sponsorshipPlansLink: String,
+  $planRequestDate: Date, $planDueDate: Date, $campaignStartDate: Date, $campaignEndDate: Date, $tags: String,
+  $updatedAt: Timestamp, $updatedBy: String
+) @auth(level: NO_ACCESS) {
+  project_update(key: { id: $id }, data: {
+    projectName: $projectName, account: $account, brand: $brand, agency: $agency, holdCo: $holdCo,
+    leadMediaPlannerEmail: $leadMediaPlannerEmail, leadMediaPlanner2Email: $leadMediaPlanner2Email, leadSellerEmail: $leadSellerEmail,
+    sponsorshipStrategyLead: $sponsorshipStrategyLead, salesAccountManager: $salesAccountManager, yieldContact: $yieldContact,
+    pitchLeadName: $pitchLeadName, pitchTeam: $pitchTeam, rushRequest: $rushRequest, mediaPlanStatus: $mediaPlanStatus, dealStatus: $dealStatus,
+    dealCategory: $dealCategory, tentpoleShowId: $tentpoleShowId, seasonYearId: $seasonYearId, folderId: $folderId, driveFolderLink: $driveFolderLink,
+    salesforceLink: $salesforceLink, scratchpadLink: $scratchpadLink, budgetSheetLink: $budgetSheetLink, sponsorshipPlansLink: $sponsorshipPlansLink,
+    planRequestDate: $planRequestDate, planDueDate: $planDueDate, campaignStartDate: $campaignStartDate, campaignEndDate: $campaignEndDate, tags: $tags,
+    updatedAt: $updatedAt, updatedBy: $updatedBy
+  })
+}
+mutation DeleteProject($id: String!) @auth(level: NO_ACCESS) {
+  project_delete(key: { id: $id })
+}
+
+mutation CreateVersion($id: String!, $projectId: String, $name: String, $completedDate: Date, $totalInvestment: Float, $versionStatus: String, $folderId: String, $packages: String, $createdAt: Timestamp, $createdBy: String, $updatedAt: Timestamp, $updatedBy: String) @auth(level: NO_ACCESS) {
+  version_insert(data: { id: $id, projectId: $projectId, name: $name, completedDate: $completedDate, totalInvestment: $totalInvestment, versionStatus: $versionStatus, folderId: $folderId, packages: $packages, createdAt: $createdAt, createdBy: $createdBy, updatedAt: $updatedAt, updatedBy: $updatedBy })
+}
+mutation UpdateVersion($id: String!, $projectId: String, $name: String, $completedDate: Date, $totalInvestment: Float, $versionStatus: String, $folderId: String, $packages: String, $updatedAt: Timestamp, $updatedBy: String) @auth(level: NO_ACCESS) {
+  version_update(key: { id: $id }, data: { projectId: $projectId, name: $name, completedDate: $completedDate, totalInvestment: $totalInvestment, versionStatus: $versionStatus, folderId: $folderId, packages: $packages, updatedAt: $updatedAt, updatedBy: $updatedBy })
+}
+mutation DeleteVersion($id: String!) @auth(level: NO_ACCESS) {
+  version_delete(key: { id: $id })
+}
+
+mutation CreateSponsorshipPackage($id: String!, $showId: String, $seasonYearId: String, $name: String, $status: String, $placements: String, $blendGroups: String, $createdAt: Timestamp, $createdBy: String, $updatedAt: Timestamp, $updatedBy: String) @auth(level: NO_ACCESS) {
+  sponsorshipPackage_insert(data: { id: $id, showId: $showId, seasonYearId: $seasonYearId, name: $name, status: $status, placements: $placements, blendGroups: $blendGroups, createdAt: $createdAt, createdBy: $createdBy, updatedAt: $updatedAt, updatedBy: $updatedBy })
+}
+mutation UpdateSponsorshipPackage($id: String!, $showId: String, $seasonYearId: String, $name: String, $status: String, $placements: String, $blendGroups: String, $updatedAt: Timestamp, $updatedBy: String) @auth(level: NO_ACCESS) {
+  sponsorshipPackage_update(key: { id: $id }, data: { showId: $showId, seasonYearId: $seasonYearId, name: $name, status: $status, placements: $placements, blendGroups: $blendGroups, updatedAt: $updatedAt, updatedBy: $updatedBy })
+}
+mutation DeleteSponsorshipPackage($id: String!) @auth(level: NO_ACCESS) {
+  sponsorshipPackage_delete(key: { id: $id })
+}
+
+mutation CreateProjectFileLink($id: String!, $projectId: String, $name: String, $url: String, $createdAt: Timestamp, $createdBy: String) @auth(level: NO_ACCESS) {
+  projectFileLink_insert(data: { id: $id, projectId: $projectId, name: $name, url: $url, createdAt: $createdAt, createdBy: $createdBy })
+}
+mutation DeleteProjectFileLink($id: String!) @auth(level: NO_ACCESS) {
+  projectFileLink_delete(key: { id: $id })
+}
+
+mutation UpsertClosedDeal(
+  $dealId: String!, $projectId: String, $versionId: String, $projectName: String, $brandName: String, $subBrandName: String,
+  $agencyName: String, $versionName: String, $dealCategory: String, $tentpoleShowName: String, $dealStatus: String,
+  $verifiedBy: String, $verifiedAt: Timestamp, $verificationNotes: String, $markedClosedAt: Timestamp,
+  $totalInvestment: Float, $totalMarginPercent: Float, $snapshot: String, $updatedAt: Timestamp
+) @auth(level: NO_ACCESS) {
+  closedDeal_upsert(data: {
+    dealId: $dealId, projectId: $projectId, versionId: $versionId, projectName: $projectName, brandName: $brandName, subBrandName: $subBrandName,
+    agencyName: $agencyName, versionName: $versionName, dealCategory: $dealCategory, tentpoleShowName: $tentpoleShowName, dealStatus: $dealStatus,
+    verifiedBy: $verifiedBy, verifiedAt: $verifiedAt, verificationNotes: $verificationNotes, markedClosedAt: $markedClosedAt,
+    totalInvestment: $totalInvestment, totalMarginPercent: $totalMarginPercent, snapshot: $snapshot, updatedAt: $updatedAt
+  })
+}
+mutation DeleteClosedDeal($dealId: String!) @auth(level: NO_ACCESS) {
+  closedDeal_delete(key: { dealId: $dealId })
+}

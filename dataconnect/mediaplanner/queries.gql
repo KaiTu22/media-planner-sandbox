@@ -1,0 +1,194 @@
+# List queries for every entity (confirmed 2026-10-08: Data Connect
+# auto-generates a lowercase-plural root query field per @table type, e.g.
+# `tags { ... }` for the Tag type -- these just select every field Code.gs's
+# corresponding *_FIELDS array expects, so the new storage layer's readRows_
+# equivalent can map the response straight onto the same shape the Sheets
+# version returned.
+
+query ListUsers @auth(level: NO_ACCESS) {
+  users {
+    email
+    name
+    role
+    slackUserId
+  }
+}
+
+query ListTags @auth(level: NO_ACCESS) {
+  tags {
+    id
+    name
+    color
+    createdAt
+    createdBy
+  }
+}
+
+query ListHoldCos @auth(level: NO_ACCESS) {
+  holdCos {
+    name
+  }
+}
+
+query ListPitchTeams @auth(level: NO_ACCESS) {
+  pitchTeams {
+    name
+  }
+}
+
+query ListAgencyHoldCo @auth(level: NO_ACCESS) {
+  agencyHoldCos {
+    agency
+    holdCo
+  }
+}
+
+query ListTeamRoster @auth(level: NO_ACCESS) {
+  teamRosters {
+    teamMemberName
+    pitchTeam
+  }
+}
+
+query ListTentpoleShows @auth(level: NO_ACCESS) {
+  tentpoleShows {
+    id
+    name
+  }
+}
+
+query ListSeasonYears @auth(level: NO_ACCESS) {
+  seasonYears {
+    id
+    showId
+    name
+  }
+}
+
+query ListPlacementCategories @auth(level: NO_ACCESS) {
+  placementCategories {
+    id
+    name
+    placementType
+  }
+}
+
+query ListPlacementMenuItems @auth(level: NO_ACCESS) {
+  placementMenuItems {
+    id
+    categoryId
+    name
+    rateMode
+    sharedCostMethod
+    sharedRate
+    lines
+  }
+}
+
+query ListProjects @auth(level: NO_ACCESS) {
+  projects {
+    id
+    projectName
+    account
+    brand
+    agency
+    holdCo
+    leadMediaPlannerEmail
+    leadMediaPlanner2Email
+    leadSellerEmail
+    sponsorshipStrategyLead
+    salesAccountManager
+    yieldContact
+    pitchLeadName
+    pitchTeam
+    rushRequest
+    mediaPlanStatus
+    dealStatus
+    dealCategory
+    tentpoleShowId
+    seasonYearId
+    folderId
+    driveFolderLink
+    salesforceLink
+    scratchpadLink
+    budgetSheetLink
+    sponsorshipPlansLink
+    planRequestDate
+    planDueDate
+    campaignStartDate
+    campaignEndDate
+    tags
+    createdAt
+    createdBy
+    updatedAt
+    updatedBy
+  }
+}
+
+query ListVersions @auth(level: NO_ACCESS) {
+  versions {
+    id
+    projectId
+    name
+    completedDate
+    totalInvestment
+    versionStatus
+    folderId
+    packages
+    createdAt
+    createdBy
+    updatedAt
+    updatedBy
+  }
+}
+
+query ListSponsorshipPackages @auth(level: NO_ACCESS) {
+  sponsorshipPackages {
+    id
+    showId
+    seasonYearId
+    name
+    status
+    placements
+    blendGroups
+    createdAt
+    createdBy
+    updatedAt
+    updatedBy
+  }
+}
+
+query ListProjectFileLinks @auth(level: NO_ACCESS) {
+  projectFileLinks {
+    id
+    projectId
+    name
+    url
+    createdAt
+    createdBy
+  }
+}
+
+query ListClosedDeals @auth(level: NO_ACCESS) {
+  closedDeals {
+    dealId
+    projectId
+    versionId
+    projectName
+    brandName
+    subBrandName
+    agencyName
+    versionName
+    dealCategory
+    tentpoleShowName
+    dealStatus
+    verifiedBy
+    verifiedAt
+    verificationNotes
+    markedClosedAt
+    totalInvestment
+    totalMarginPercent
+    snapshot
+    updatedAt
+  }
+}

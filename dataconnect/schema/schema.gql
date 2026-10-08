@@ -1,0 +1,183 @@
+# Schema for the media-planner-sandbox backend migration (Sheets -> Postgres
+# via SQL Connect), confirmed 2026-10-08. Mirrors the field lists in Code.gs
+# as closely as possible -- same field names/types, same plain-string foreign
+# keys (tentpoleShowId, projectId, etc. stay as plain String columns, not
+# Data Connect relation fields) -- so the migration changes storage, not
+# behavior. The 6 generic storage helpers (readRows_/appendRecord_/etc.)
+# will be the only things that change; every id is still supplied by the
+# caller (Utilities.getUuid()/generateId()), not DB-generated, matching
+# current behavior exactly.
+#
+# Deliberately deferred to a later pass (kept as plain String columns
+# holding the same JSON-stringified/comma-separated text Sheets already
+# store, not normalized into child tables yet): Version.packages,
+# SponsorshipPackage.placements/blendGroups, PlacementMenuItem.lines,
+# ClosedDeal.snapshot, Project.tags. These are the genuinely complex/
+# polymorphic structures (e.g. a package's shape depends on its type) --
+# worth designing carefully with real input once the simpler entities below
+# are proven, not guessed at in this first pass.
+
+type User @table(key: "email") {
+  email: String!
+  name: String
+  role: String
+  slackUserId: String
+}
+
+type Tag @table {
+  id: String! @col(name: "id")
+  name: String
+  color: String
+  createdAt: Timestamp
+  createdBy: String
+}
+
+type HoldCo @table(key: "name") {
+  name: String!
+}
+
+type PitchTeam @table(key: "name") {
+  name: String!
+}
+
+type AgencyHoldCo @table(key: "agency") {
+  agency: String!
+  holdCo: String
+}
+
+type TeamRoster @table(key: "teamMemberName") {
+  teamMemberName: String!
+  pitchTeam: String
+}
+
+type TentpoleShow @table {
+  id: String! @col(name: "id")
+  name: String
+}
+
+type SeasonYear @table {
+  id: String! @col(name: "id")
+  showId: String
+  name: String
+}
+
+type PlacementCategory @table {
+  id: String! @col(name: "id")
+  name: String
+  placementType: String
+}
+
+type PlacementMenuItem @table {
+  id: String! @col(name: "id")
+  categoryId: String
+  name: String
+  rateMode: String
+  sharedCostMethod: String
+  sharedRate: Float
+  lines: String
+}
+
+type Project @table {
+  id: String! @col(name: "id")
+  projectName: String
+  account: String
+  brand: String
+  agency: String
+  holdCo: String
+  leadMediaPlannerEmail: String
+  leadMediaPlanner2Email: String
+  leadSellerEmail: String
+  sponsorshipStrategyLead: String
+  salesAccountManager: String
+  yieldContact: String
+  pitchLeadName: String
+  pitchTeam: String
+  rushRequest: Boolean
+  mediaPlanStatus: String
+  dealStatus: String
+  dealCategory: String
+  tentpoleShowId: String
+  seasonYearId: String
+  folderId: String
+  driveFolderLink: String
+  salesforceLink: String
+  scratchpadLink: String
+  budgetSheetLink: String
+  sponsorshipPlansLink: String
+  planRequestDate: Date
+  planDueDate: Date
+  campaignStartDate: Date
+  campaignEndDate: Date
+  tags: String
+  createdAt: Timestamp
+  createdBy: String
+  updatedAt: Timestamp
+  updatedBy: String
+}
+
+type Version @table {
+  id: String! @col(name: "id")
+  projectId: String
+  name: String
+  completedDate: Date
+  totalInvestment: Float
+  versionStatus: String
+  folderId: String
+  packages: String
+  createdAt: Timestamp
+  createdBy: String
+  updatedAt: Timestamp
+  updatedBy: String
+}
+
+type SponsorshipPackage @table {
+  id: String! @col(name: "id")
+  showId: String
+  seasonYearId: String
+  name: String
+  status: String
+  placements: String
+  blendGroups: String
+  createdAt: Timestamp
+  createdBy: String
+  updatedAt: Timestamp
+  updatedBy: String
+}
+
+type ProjectFileLink @table {
+  id: String! @col(name: "id")
+  projectId: String
+  name: String
+  url: String
+  createdAt: Timestamp
+  createdBy: String
+}
+
+# GraphQL field names must be camelCase (Data Connect enforces this), but
+# the underlying Postgres columns stay snake_case via @col(name: ...),
+# matching the exact names CLOSED_DEAL_FIELDS already uses in Code.gs and
+# that Supabase's existing closed_deals table already uses. Phase 2's
+# storage-layer code is what bridges Code.gs's snake_case `values` keys to
+# these camelCase GraphQL field names -- a small, contained adapter, not a
+# behavior change to CLOSED_DEAL_FIELDS itself.
+type ClosedDeal @table(key: "dealId") {
+  dealId: String! @col(name: "deal_id")
+  projectId: String @col(name: "project_id")
+  versionId: String @col(name: "version_id")
+  projectName: String @col(name: "project_name")
+  brandName: String @col(name: "brand_name")
+  subBrandName: String @col(name: "sub_brand_name")
+  agencyName: String @col(name: "agency_name")
+  versionName: String @col(name: "version_name")
+  dealCategory: String @col(name: "deal_category")
+  tentpoleShowName: String @col(name: "tentpole_show_name")
+  dealStatus: String @col(name: "deal_status")
+  verifiedBy: String @col(name: "verified_by")
+  verifiedAt: Timestamp @col(name: "verified_at")
+  verificationNotes: String @col(name: "verification_notes")
+  markedClosedAt: Timestamp @col(name: "marked_closed_at")
+  totalInvestment: Float @col(name: "total_investment")
+  totalMarginPercent: Float @col(name: "total_margin_percent")
+  snapshot: String
+  updatedAt: Timestamp @col(name: "updated_at")
+}

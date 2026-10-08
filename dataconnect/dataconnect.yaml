@@ -1,0 +1,13 @@
+specVersion: "v1"
+serviceId: "media-planner-f2113-service"
+location: "us-east4"
+schemas:
+  - source: "./schema"
+    datasource:
+      postgresql:
+        database: "media-planner-f2113-database"
+        cloudSql:
+          instanceId: "media-planner-f2113-instance"
+          # schemaValidation: "STRICT"     # STRICT mode makes Postgres schema match Data Connect exactly.
+          # schemaValidation: "COMPATIBLE" # COMPATIBLE mode makes Postgres schema compatible with Data Connect.
+connectorDirs: ["./mediaplanner"]
