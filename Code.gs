@@ -2032,3 +2032,25 @@ function testTagsCutover() {
 
   Logger.log(results.join('\n'));
 }
+
+// One-time data migration (confirmed 2026-10-08; run from the Apps Script
+// editor's Run button) -- copies Tags' existing Sheets data into Postgres
+// before/alongside the Phase 4 cutover. Caught by checking the live
+// deployment right after cutover: listTags correctly returned [] from
+// Postgres's actual (empty, except for our own always-cleaned-up test
+// rows) state, revealing that Phase 3 (migrate existing data) needs to
+// happen for an entity before Phase 4 (cut over reads to it) -- skipped
+// for Tags in the rush to verify the cutover mechanism itself. Safe to
+// re-run: skips any tag whose id already exists in Postgres.
+function migrateTagsToSql() {
+  const existingSql = readRowsSql_(SHEET_NAMES.tags);
+  const existingIds = new Set(existingSql.map(function (t) { return t.id; }));
+  const sheetRows = readRows_(SHEET_NAMES.tags);
+  let migrated = 0, skipped = 0;
+  sheetRows.forEach(function (row) {
+    if (existingIds.has(row.id)) { skipped++; return; }
+    appendRecordSql_(SHEET_NAMES.tags, TAG_FIELDS, row);
+    migrated++;
+  });
+  Logger.log('Tags migration: migrated=' + migrated + ' skipped=' + skipped + ' (sheet had ' + sheetRows.length + ' total)');
+}
