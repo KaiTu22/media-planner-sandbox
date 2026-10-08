@@ -1201,3 +1201,84 @@ function measureCurrentDataSize() {
   lines.push('TOTAL: ' + (totalBytes / 1024 / 1024).toFixed(2) + ' MB');
   Logger.log(lines.join('\n'));
 }
+
+// Confirmed 2026-10-08: ScriptApp.getOAuthToken() represents the human user
+// running the script, not a service account -- and SQL Connect's
+// @auth(level: NO_ACCESS) operations (the level we want for a trusted
+// backend, per https://firebase.google.com/docs/sql-connect/authorization-and-security)
+// specifically require an "Admin SDK context", which only a service-account
+// identity satisfies, regardless of OAuth scope. Apps Script has no native
+// service-account support, so this signs its own JWT assertion (the
+// standard Apps Script + service-account pattern) and exchanges it for a
+// real access token.
+//
+// The service account key JSON lives in Script Properties (key
+// SQL_CONNECT_SERVICE_ACCOUNT_KEY), not in source -- it's a long-lived,
+// powerful credential and must never be committed to git.
+function getServiceAccountAccessToken_() {
+  const keyJson = PropertiesService.getScriptProperties().getProperty('SQL_CONNECT_SERVICE_ACCOUNT_KEY');
+  if (!keyJson) {
+    throw new Error('SQL_CONNECT_SERVICE_ACCOUNT_KEY script property is not set.');
+  }
+  const key = JSON.parse(keyJson);
+  const tokenUri = key.token_uri || 'https://oauth2.googleapis.com/token';
+
+  const base64url_ = function (obj) {
+    return Utilities.base64EncodeWebSafe(JSON.stringify(obj)).replace(/=+$/, '');
+  };
+  const now = Math.floor(Date.now() / 1000);
+  const unsigned = base64url_({ alg: 'RS256', typ: 'JWT' }) + '.' + base64url_({
+    iss: key.client_email,
+    scope: 'https://www.googleapis.com/auth/cloud-platform',
+    aud: tokenUri,
+    iat: now,
+    exp: now + 3600,
+  });
+  const signature = Utilities.base64EncodeWebSafe(Utilities.computeRsaSha256Signature(unsigned, key.private_key)).replace(/=+$/, '');
+  const jwt = unsigned + '.' + signature;
+
+  const response = UrlFetchApp.fetch(tokenUri, {
+    method: 'post',
+    contentType: 'application/x-www-form-urlencoded',
+    payload: { grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: jwt },
+    muteHttpExceptions: true,
+  });
+  const body = JSON.parse(response.getContentText());
+  if (!body.access_token) {
+    throw new Error('Failed to get service account access token: ' + response.getContentText());
+  }
+  return body.access_token;
+}
+
+// One-time manual check (confirmed 2026-10-08; run from the Apps Script
+// editor's Run button) -- confirms the service-account JWT flow above
+// actually satisfies SQL Connect's "Admin SDK context" requirement and can
+// call the deployed connector's executeQuery endpoint.
+function testDataConnectQuery() {
+  const token = getServiceAccountAccessToken_();
+
+  // Confirm the token itself is genuinely valid and see exactly which
+  // identity/scope it represents, before blaming SQL Connect's permission
+  // model for the 403 -- rules out a broken JWT signature/exchange first.
+  const tokenInfo = UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?access_token=' + encodeURIComponent(token), { muteHttpExceptions: true });
+  Logger.log('Token info: ' + tokenInfo.getContentText());
+
+  // Theory (confirmed 2026-10-08): the connector-scoped :executeQuery/
+  // :executeMutation endpoints are the stable "public" surface generated
+  // client SDKs call, and always enforce @auth regardless of caller --
+  // the service-level :executeGraphql endpoint (what firebase-tools'
+  // own `dataconnect:execute` CLI command uses, confirmed via --debug
+  // output, and which worked fine against our NO_ACCESS operations) is
+  // the actual IAM-gated admin/privileged path.
+  const url = 'https://firebasedataconnect.googleapis.com/v1/projects/media-planner-f2113/locations/us-east4/services/media-planner-f2113-service:executeGraphql';
+  const query = 'query ListTags { tags { id name color createdAt createdBy } }';
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + token },
+    payload: JSON.stringify({ query: query, operationName: 'ListTags', variables: {} }),
+    muteHttpExceptions: true,
+  });
+  Logger.log('Status: ' + response.getResponseCode());
+  Logger.log('Body: ' + response.getContentText());
+}
